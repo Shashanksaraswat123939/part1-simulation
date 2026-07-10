@@ -5,7 +5,7 @@ Verifies that Part 1's output types are compatible with Part 2's input types.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "part2_simulation"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "part2_simulation"))
 
 import numpy as np
 

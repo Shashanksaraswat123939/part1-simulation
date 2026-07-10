@@ -1,2 +1,18 @@
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.log
+
+# Generated geometry/simulation artifacts
+dist/
+build/
+*.stl
+*.npy
