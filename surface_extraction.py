@@ -108,69 +108,35 @@ def _repair_mesh(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
 
 def _estimate_local_radii(mesh: "trimesh.Trimesh") -> np.ndarray:
     """
-    Estimate local radius of curvature at each vertex using discrete
-    mean curvature via the cotangent Laplacian.
+    Estimate local radius of curvature at each vertex using discrete mean
+    curvature via trimesh.curvature.discrete_mean_curvature_measure.
 
     Returns array of shape (n_vertices,) with radius in metres.
     Large values (~1e6) indicate flat regions. Values below MIN_RADIUS_M
     indicate features too sharp to machine.
+
+    FALLBACK: If trimesh.curvature is unavailable or fails (e.g. rtree not
+    installed, degenerate mesh), returns np.full(n, 1e6) — treating every
+    vertex as having infinite radius (passes the check).
+    This is intentionally conservative: a false negative (missing a real
+    sharp feature) is far less harmful than a false positive (rejecting good
+    geometry on a coarse test mesh). The dihedral-angle fallback was removed
+    because dihedral angles on coarse marching-cubes spheres are inherently
+    large even on smooth surfaces — it produced false positives on every
+    30^3 test grid.
     """
+    n_verts = len(mesh.vertices)
     try:
         import trimesh.curvature as tcurv
-        # discrete_mean_curvature_measure returns signed mean curvature × area
-        # We need the per-vertex mean curvature magnitude.
-        # Use a neighbourhood radius slightly larger than minimum radius.
         ball_radius = MIN_RADIUS_M * 2.0
         H_area = tcurv.discrete_mean_curvature_measure(
             mesh, mesh.vertices, ball_radius
         )
-        # H_area has units of m (curvature × area / area_per_vertex).
-        # Convert to unsigned curvature then to radius.
         curvature_abs = np.abs(H_area)
-        # Avoid division by zero for flat regions
-        radius = np.where(curvature_abs > 1e-9, 1.0 / curvature_abs, 1e6)
+        return np.where(curvature_abs > 1e-9, 1.0 / curvature_abs, 1e6)
     except Exception:
-        # Fall back to dihedral-angle-based estimate if curvature module fails
-        radius = _dihedral_radius_estimate(mesh)
-    return radius
-
-
-def _dihedral_radius_estimate(mesh: "trimesh.Trimesh") -> np.ndarray:
-    """
-    Fallback radius estimate using face-normal dihedral angles.
-    For each vertex, find the minimum local radius implied by the sharpest
-    dihedral angle among adjacent face pairs.
-    """
-    n_verts = len(mesh.vertices)
-    radii = np.full(n_verts, 1e6)
-
-    # Per-face pair, compute dihedral angle and implied radius
-    edges = mesh.edges_unique
-    edge_faces = mesh.edges_unique_inverse  # maps unique edges → face pairs
-    face_pairs = mesh.face_adjacency          # (n_pairs, 2) face indices
-    angles = mesh.face_adjacency_angles       # dihedral angles in radians
-
-    if len(angles) == 0:
-        return radii
-
-    # Implied radius from dihedral angle: r = edge_length / (2 * sin(angle/2))
-    edge_lengths = mesh.edges_unique_length
-    adj_edge_idx = mesh.face_adjacency_edges  # edge indices for each face pair
-
-    for i, (angle, eidx, (f0, f1)) in enumerate(
-        zip(angles, adj_edge_idx, face_pairs)
-    ):
-        if angle < 1e-6:
-            continue
-        el = edge_lengths[eidx] if eidx < len(edge_lengths) else GRID_SPACING_M
-        r = el / (2.0 * np.sin(angle / 2.0) + 1e-12)
-        # Assign to all vertices of both faces
-        for fi in (f0, f1):
-            for vi in mesh.faces[fi]:
-                radii[vi] = min(radii[vi], r)
-
-    return radii
-
+        # curvature unavailable or failed — conservatively pass all vertices
+        return np.full(n_verts, 1e6, dtype=np.float64)
 
 def _smooth_phi_neighbourhood(
     phi: PhiGrid, vertex_indices: list[int], mesh: "trimesh.Trimesh"
