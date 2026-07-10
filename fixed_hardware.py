@@ -3,7 +3,17 @@ from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 import sys, os
-sys.path.insert(0, r'C:\Users\shash\Desktop\NEW CFD\part2_simulation')
+from pathlib import Path
+
+# Resolve Part 2 path: env var PART2_PATH overrides default (sibling directory).
+# This avoids hardcoded absolute paths that break on every non-developer machine.
+_part2_path = os.environ.get(
+    "PART2_PATH",
+    str(Path(__file__).resolve().parent.parent / "part2_simulation"),
+)
+if _part2_path not in sys.path:
+    sys.path.insert(0, _part2_path)
+
 from mass_com_ingest import FixedHardwareSpec   # Part 2 type
 from geometry_contract import (
     CO2_MASS_KG, GRID_SPACING_M, WHEEL_CLEARANCE_M,

@@ -3,6 +3,11 @@ mass_com_calculator.py --- Compute mass and COM from phi grids.
 
 Solid cells (phi < 0) represent material. Cell volume = GRID_SPACING_M^3.
 Mass = volume * density. COM = mass-weighted mean of solid cell centres.
+
+ComponentMassCOM: preferentially imported from Part 2's physics_contract
+(which is the canonical definition) to avoid divergence if Part 2 adds fields
+or validators. Falls back to a local dataclass if Part 2 is not on sys.path,
+so Part 1 can be developed and tested without Part 2 present.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -12,14 +17,26 @@ from geometry_contract import GRID_SPACING_M, get_density
 from phi_grid import PhiGrid
 
 
-@dataclass(frozen=True)
-class ComponentMassCOM:
-    """Mass and COM for one component."""
-    name: str
-    mass_kg: float
-    com_x_m: float
-    com_y_m: float
-    com_z_m: float
+# ── ComponentMassCOM ───────────────────────────────────────────────────────
+# Try to import from Part 2 (canonical definition).  Fall back to local stub.
+try:
+    from physics_contract import ComponentMassCOM  # Part 2 canonical type
+    _USING_PART2_TYPE = True
+except ImportError:
+    @dataclass(frozen=True)
+    class ComponentMassCOM:  # type: ignore[no-redef]
+        """
+        Local fallback definition. Fields must stay in sync with Part 2's
+        physics_contract.ComponentMassCOM. The integration test
+        (test_integration_part1_part2.py::test_component_mass_com_shape_matches)
+        verifies the fields match.
+        """
+        name: str
+        mass_kg: float
+        com_x_m: float
+        com_y_m: float
+        com_z_m: float
+    _USING_PART2_TYPE = False
 
 
 def compute_component_mass_com(

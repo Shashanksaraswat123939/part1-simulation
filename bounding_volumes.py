@@ -1,3 +1,13 @@
+"""
+bounding_volumes.py --- Legal bounding regions for all phi-grid components.
+
+Contains:
+  - BoundingRegion: arbitrary 3D shape support (box / polygon / voxel modes)
+  - _point_in_polygon_vectorised: ray-casting polygon test (vectorised)
+  - BoundingVolumes: all four component regions for one (W, d_halo) config
+  - RuleEnvelope: absolute car envelope dimensions (⚠ UNRESOLVED U6)
+  - compute_bounding_volumes: main entry point
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
@@ -187,15 +197,6 @@ def _point_in_polygon_vectorised(
 
     return inside
 
-"""
-bounding_volumes.py --- Legal bounding regions for all phi-grid components.
-
-Contains:
-  - BoundingRegion class (arbitrary shape support)
-  - _point_in_polygon_vectorised (ray-casting polygon test)
-  - BoundingVolumes dataclass (all four volumes for one W, d_halo)
-  - compute_bounding_volumes() entry point
-"""
 @dataclass(frozen=True)
 class BoundingVolumes:
     """
