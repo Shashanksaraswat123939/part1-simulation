@@ -1,0 +1,16 @@
+## 17. Part 3 Interface Contract (Exact Calls)
+
+| Part 3 inner loop step | Part 1 call | Notes |
+|---|---|---|
+| Outer loop: new W | `compute_bounding_volumes(W_mm, d_halo_mm, front_cyl, rear_cyl, rule_env)` | Every outer iteration |
+| Warm-start | `phi.remap(new_bv, new_hard_masks)` for all 4 grids | Before first inner iter of new W |
+| Step 2: hard constraints | `phi.apply_hard_constraints()` for all 4 grids | Top of every inner iter |
+| Step 3: extract STL | `extract_surface(phi)` x 4, then `assemble_stl(meshes, id, dir)` | Every inner iter |
+| Step 4: gates | `run_quality_gates(phi_grids, id, dir)` | After extraction |
+| Step 7: mass + COM | `compute_all_machined_components(nose_phi, sidepod_phi, rearpod_phi, body_phi)` | Every inner iter |
+| Step 11-14: phi update | `update_phi(phi_grids, sensitivity, dt, weights)` | After adjoint run |
+| Snapshot save | `phi.save(candidate_id, out_dir)` x 4 | After every inner iter, including failed |
+| Snapshot load | `phi.load(path)` | Warm-start restoration |
+| Evolutionary perturbation | `phi.init(mode="random")` on a copy | Every mutation step |
+
+---

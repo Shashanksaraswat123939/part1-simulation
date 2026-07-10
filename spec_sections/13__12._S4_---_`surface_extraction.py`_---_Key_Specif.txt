@@ -1,0 +1,78 @@
+## 12. S4 --- `surface_extraction.py` --- Key Specifications
+
+### 12.1 Exception Hierarchy
+
+```python
+class SurfaceExtractionError(Exception):
+    """Base. Caught by S9."""
+
+class RadiusViolation(SurfaceExtractionError):
+    """Minimum radius not achieved after max repair iterations."""
+
+class AccessibilityFailure(SurfaceExtractionError):
+    is_large: bool  # True -> kill; False -> retry with smoothing
+    def __init__(self, msg: str, is_large: bool):
+        super().__init__(msg)
+        self.is_large = is_large
+
+class RuleViolation(SurfaceExtractionError):
+    is_major: bool  # True -> hard penalty, kill; False -> project and retry
+    def __init__(self, msg: str, is_major: bool):
+        super().__init__(msg)
+        self.is_major = is_major
+
+class MeshQualityFailure(SurfaceExtractionError):
+    """Mesh fails gate after simplification attempt."""
+```
+
+### 12.2 Pipeline Entry Point
+
+```python
+def extract_surface(phi: PhiGrid, max_radius_retries: int = MAX_EXTRACTION_RETRIES) -> trimesh.Trimesh:
+    """
+    Run all 6 stages. Return clean Trimesh. Raise on unrecoverable failure.
+
+    Stage 1: Marching Cubes on phi.grid, level=0.0, spacing=(GRID_SPACING_M,)*3
+             Translate vertices from index space to world coordinates using phi.bv.origin_m
+             If 0 faces: raise SurfaceExtractionError("Empty mesh")
+
+    Stage 2: Geometry repair
+             trimesh.util.concatenate([max component by face count])
+             trimesh.repair.fill_holes(mesh)
+             trimesh.repair.fix_normals(mesh)
+             trimesh.repair.fix_winding(mesh)
+             Remove faces with area < 1e-12 m^2
+
+    Stage 3: Minimum radius check (loop up to max_radius_retries)
+             Estimate local radius from vertex neighbour angles
+             If violations present: smooth phi.grid via Laplacian smoothing
+             on neighbourhood of violated vertices, apply_hard_constraints(),
+             re-run Stage 1+2, try again
+             If still violated after max_radius_retries: raise RadiusViolation
+
+    Stage 4: Tool accessibility
+             Use TOOL_DIRECTIONS[phi.component]
+             For each direction: find faces whose normal has dot > 0 with direction
+             Cast ray from face centre along approach direction
+             Face is accessible if ray does not re-enter mesh
+             Sum area of inaccessible faces
+             If area < SMALL_INACCESSIBLE_AREA_M2: raise AccessibilityFailure(is_large=False)
+             If area >= LARGE_INACCESSIBLE_AREA_M2: raise AccessibilityFailure(is_large=True)
+
+    Stage 5: Rule checker
+             Check all vertices within bv extent (tolerance 0.1 mm)
+             ? UNRESOLVED U4: Full UAE envelope check not implemented
+             Raise RuleViolation(is_major=True) on envelope breach
+
+    Stage 6: Mesh quality gate
+             if not mesh.is_watertight: repair, retry, raise MeshQualityFailure if still bad
+             if not mesh.is_volume: raise MeshQualityFailure
+             Triangle angles: min angle > MESH_MIN_TRIANGLE_ANGLE_DEG (10 deg)
+             If below threshold: mesh.simplify_quadric_decimation(percent=0.9), re-check
+             If still bad: raise MeshQualityFailure
+
+    Return cleaned mesh in metres.
+    """
+```
+
+---

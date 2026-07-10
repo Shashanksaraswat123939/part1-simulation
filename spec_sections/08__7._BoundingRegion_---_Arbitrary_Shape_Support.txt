@@ -1,0 +1,201 @@
+## 7. BoundingRegion --- Arbitrary Shape Support
+
+This is a standalone class that must be implemented BEFORE `bounding_volumes.py` (S2) because S2 uses it. It lives in `bounding_volumes.py`.
+
+### 7.1 Why Arbitrary Shapes
+
+The car body cross-sections are NOT rectangular. Sidepods taper. The nose has a curved profile. Rearpods have rounded cross-sections. Constraining everything to axis-aligned boxes (a) over-constrains the optimizer (cells that are technically inside the box but outside the legal cross-section won't be used, wasting grid resolution) and (b) produces incorrect forbidden zones if the wheel void mask is a cylinder (not a box).
+
+The system must support:
+- **Axis-aligned box**: special case, always works
+- **Convex polygon cross-section extruded in x**: e.g. a sidepod corridor that is trapezoidal in y-z
+- **Arbitrary voxel mask**: the most general case --- a boolean numpy array of exactly the grid shape, True where the region is valid, False where it is forbidden
+
+### 7.2 `BoundingRegion` Class
+
+Write this class inside `bounding_volumes.py`. It is imported and used by `phi_grid.py` and `fixed_hardware.py`.
+
+```python
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Optional
+import numpy as np
+
+@dataclass
+class BoundingRegion:
+    """
+    A 3D region definition for one phi grid component.
+
+    Supports three modes:
+      1. BOX mode: axis-aligned bounding box (simplest)
+      2. POLYGON mode: convex polygon cross-section in y-z plane, extruded along x
+      3. VOXEL mode: arbitrary boolean mask (most general)
+
+    Only one mode is active per instance. The mode is determined by which
+    constructor arguments are non-None.
+
+    In all modes:
+      - origin_m: (x0, y0, z0) coordinates of grid index [0,0,0] in metres
+      - shape: (nx, ny, nz) number of grid cells in each axis
+      - All coordinates are in the car coordinate system (x=front-to-rear, y=CL-to-right, z=up)
+
+    Cell centre of grid index (i, j, k) is at:
+      x = origin_m[0] + i * GRID_SPACING_M
+      y = origin_m[1] + j * GRID_SPACING_M
+      z = origin_m[2] + k * GRID_SPACING_M
+    """
+
+    component: str
+    origin_m: tuple[float, float, float]   # (x0, y0, z0) of cell [0,0,0] centre
+    shape: tuple[int, int, int]            # (nx, ny, nz) --- number of cells
+
+    # BOX mode: None means use full grid extent (same as axis-aligned box)
+    # If all three polygon_* and voxel_mask are None, this is BOX mode.
+
+    # POLYGON mode: convex polygon in y-z plane, constant along x
+    # polygon_yz_m: list of (y, z) vertices in metres, counterclockwise order
+    # The polygon is the same cross-section at every x slice.
+    polygon_yz_m: Optional[list[tuple[float, float]]] = None
+
+    # VOXEL mode: explicit boolean mask, shape must equal self.shape
+    # True = valid (inside region), False = forbidden (outside region)
+    # If provided, polygon_yz_m is ignored.
+    voxel_mask: Optional[np.ndarray] = None
+
+    # Cached valid mask (computed on first access, then cached)
+    _cached_valid_mask: Optional[np.ndarray] = field(default=None, repr=False, compare=False)
+
+    @property
+    def nx(self) -> int: return self.shape[0]
+    @property
+    def ny(self) -> int: return self.shape[1]
+    @property
+    def nz(self) -> int: return self.shape[2]
+
+    @property
+    def mode(self) -> str:
+        """Returns 'voxel', 'polygon', or 'box'."""
+        if self.voxel_mask is not None:
+            return "voxel"
+        if self.polygon_yz_m is not None:
+            return "polygon"
+        return "box"
+
+    def valid_mask(self) -> np.ndarray:
+        """
+        Return boolean array of shape (nx, ny, nz).
+        True = this cell is inside the valid region.
+        False = this cell is outside the valid region (should be treated as phi > 0).
+
+        In BOX mode: all True (entire grid is valid).
+        In POLYGON mode: True where cell centre (y, z) is inside the polygon.
+        In VOXEL mode: directly returns the provided voxel_mask.
+
+        Result is cached after first computation.
+        """
+        if self._cached_valid_mask is not None:
+            return self._cached_valid_mask
+
+        if self.mode == "voxel":
+            if self.voxel_mask.shape != self.shape:
+                raise ValueError(
+                    f"{self.component}: voxel_mask shape {self.voxel_mask.shape} "
+                    f"!= grid shape {self.shape}."
+                )
+            self._cached_valid_mask = self.voxel_mask.astype(bool)
+
+        elif self.mode == "polygon":
+            self._cached_valid_mask = self._compute_polygon_mask()
+
+        else:  # BOX mode
+            self._cached_valid_mask = np.ones(self.shape, dtype=bool)
+
+        return self._cached_valid_mask
+
+    def _compute_polygon_mask(self) -> np.ndarray:
+        """
+        Compute boolean mask for polygon cross-section.
+
+        Algorithm: for each grid cell, compute (y, z) of its centre.
+        Test whether (y, z) is inside the polygon using the ray-casting method.
+        Result is the same at every x slice (polygon is extruded along x).
+
+        The polygon_yz_m must be a convex or non-convex simple polygon.
+        Vertices can be in any order --- the code handles both CW and CCW.
+        """
+        from geometry_contract import GRID_SPACING_M
+
+        nx, ny, nz = self.shape
+        ox, oy, oz = self.origin_m
+        dx = GRID_SPACING_M
+
+        # Build y and z coordinate arrays for all grid cells
+        ys = oy + np.arange(ny) * dx    # shape (ny,)
+        zs = oz + np.arange(nz) * dx    # shape (nz,)
+        # Y[j, k] = y coordinate of cell (*, j, k)
+        # Z[j, k] = z coordinate of cell (*, j, k)
+        Y, Z = np.meshgrid(ys, zs, indexing="ij")   # shape (ny, nz)
+
+        inside_yz = _point_in_polygon_vectorised(
+            Y.ravel(), Z.ravel(), self.polygon_yz_m
+        ).reshape(ny, nz)    # shape (ny, nz)
+
+        # Broadcast to all x slices: shape (nx, ny, nz)
+        mask = np.broadcast_to(inside_yz[np.newaxis, :, :], (nx, ny, nz)).copy()
+        return mask
+
+    def x_max_m(self) -> float:
+        return self.origin_m[0] + self.nx * GRID_SPACING_M
+
+    def y_max_m(self) -> float:
+        return self.origin_m[1] + self.ny * GRID_SPACING_M
+
+    def z_max_m(self) -> float:
+        return self.origin_m[2] + self.nz * GRID_SPACING_M
+
+
+def _point_in_polygon_vectorised(
+    ys: np.ndarray,
+    zs: np.ndarray,
+    polygon_yz: list[tuple[float, float]],
+) -> np.ndarray:
+    """
+    Ray-casting polygon test for N points.
+
+    Returns boolean array of shape (N,).
+    True = point is inside the polygon.
+
+    Algorithm: cast a ray in the +y direction from each test point.
+    Count how many polygon edges it crosses. Odd = inside, even = outside.
+    This handles both convex and non-convex polygons correctly.
+
+    polygon_yz: list of (y, z) vertex coordinates.
+    """
+    n_pts = len(ys)
+    inside = np.zeros(n_pts, dtype=bool)
+
+    verts = list(polygon_yz)
+    n_verts = len(verts)
+
+    for i in range(n_verts):
+        y1, z1 = verts[i]
+        y2, z2 = verts[(i + 1) % n_verts]
+
+        # Edge crosses z-coordinate of test point (z1 to z2 straddles test z)
+        cond_z = ((z1 <= zs) & (zs < z2)) | ((z2 <= zs) & (zs < z1))
+
+        # x-intercept of edge at test point's z coordinate
+        # (if z1 == z2 this is a horizontal edge; cond_z handles it correctly)
+        dz = z2 - z1
+        safe = np.where(np.abs(dz) > 1e-14, dz, 1.0)
+        y_intercept = y1 + (zs - z1) * (y2 - y1) / safe
+
+        # Ray in +y direction: does intercept lie to the right of (or at) test point?
+        cond_y = ys < y_intercept
+
+        inside ^= (cond_z & cond_y)
+
+    return inside
+```
+
+---

@@ -1,0 +1,45 @@
+## 0. Non-Negotiable Ground Rules
+
+These apply to every single line of code in Part 1. Violating any of them produces silent, catastrophic bugs.
+
+### Rule 1 --- Coordinate system
+```
+x = front to rear        (x=0 is front axle, x=W is rear axle, x increases going backward)
+y = centerline to right  (y=0 is car centerline, y>0 is right side, y<0 is left side)
+z = track upward         (z=0 is track surface, z increases going up)
+```
+This matches Part 2's `physics_contract.py` docstring **word for word**. A sign flip anywhere silently gives wrong COM, wrong drag direction, wrong adjoint gradient.
+
+### Rule 2 --- Units
+- **Inside Part 1 (S2 onward): everything is metres, kilograms, newtons, kg/m^3**
+- S1 defines conversion helpers. Call them. Never write `/ 1000` or `* 1000` anywhere except in S1's helpers.
+- Part 2 enforces SI. It will silently produce wrong results if you pass mm where m is expected.
+
+### Rule 3 --- No circular imports
+- Part 1 imports from Part 2 only at two points: S5 uses `ComponentMassCOM`, S6 uses `FixedHardwareSpec`.
+- Part 2 never imports from Part 1.
+- Within Part 1: S1 imports nothing. S6 imports from S1. S2 imports from S1+S6. S3 imports from S1+S2+S6. S4 imports from S1+S3. S5 imports from S1+S3. S7 imports from S4. S9 imports from S4+S7. S8 imports from S1+S3.
+
+### Rule 4 --- Hard constraints are sacred
+Hard masks in every phi grid are enforced by calling `apply_hard_constraints()`:
+- After `__init__` / `init()`
+- After every `hj_update()` (inside `phi_updater.py`)
+- After every `reinitialise_sdf()` (inside `phi_updater.py`)  
+- After every `remap()` (inside `phi_grid.py`)
+- After every `load()` (inside `phi_grid.py`)
+
+**Never skip this call.** The optimizer will violate every physical constraint if you do.
+
+### Rule 5 --- Arbitrary region shapes
+Bounding regions are NOT simple axis-aligned boxes. They are defined by a list of half-space constraints (planes) or a voxel mask. The system must support any convex or non-convex polygon cross-section extruded in one direction, and any voxel-painted 3D region. See Section 9 (BoundingRegion class).
+
+### Rule 6 --- Failed candidates keep their phi snapshots
+`run_quality_gates()` saves phi snapshots **before** attempting surface extraction. Even if a candidate is killed in the first stage, its phi snapshot exists on disk. Part 3's evolutionary outer loop reads these to avoid re-exploring bad regions.
+
+### Rule 7 --- Test runner is reliable
+Use `Path(__file__).resolve().parent / "tests"`. Check the directory exists. Check files exist. Surface stderr. Exit code 2 on runner infrastructure failure, 1 on test failures, 0 on all pass. Never silently eat errors. (Part 2 audit finding D1 showed how a broken runner reported "0 passed, 0 failed" with no error --- do not repeat this.)
+
+### Rule 8 --- Every placeholder is loud
+If a value is not yet known (halo cross-section, canister coordinate, UAE envelope dimensions, rear wing position), the code raises `NotImplementedError` with a message beginning `? UNRESOLVED:` and explaining exactly what is needed and where to put it. The comment above the raise must also start with `# ? UNRESOLVED`.
+
+---

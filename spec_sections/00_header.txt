@@ -1,0 +1,12 @@
+# Part 1: Generative Geometry Designer --- Exhaustive Build Specification
+
+**Version:** Final  
+**Governing specs:** `01_generative_geometry_1_.md`, `02_simulation_setups_1_.md`, `03_optimizer_workflow_1_.md`  
+**Part 2 status:** Fully implemented, 82 tests pass. Every type, function, and constant referenced below is real and locked.  
+**Part 3 status:** Spec read. All interface points derived from it.  
+**CFD symmetry:** CONFIRMED half-car (right side only). Adjoint sensitivity comes from right-half domain. U3 is RESOLVED.  
+**Halo rules:** CONFIRMED. Bottom >= 24 mm above track. Front edge must be aft of front axle (x > 0). Halo must sit between canister pocket and front axle in x (canister_x < halo_x_front < 0... wait --- front axle is at x=0 and halo is BEHIND front axle meaning halo_x_front > 0 in front-to-rear convention). See Section 8 for full derivation.
+
+**How to use this document:** Every section is complete and self-contained. The coding model reads each section and writes exactly what is described. No design decisions are left to the coder. If something says "write this code", write exactly that code. If something says "raise NotImplementedError", raise exactly that. Do not invent anything not written here.
+
+---

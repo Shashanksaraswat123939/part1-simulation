@@ -1,0 +1,67 @@
+## 11. S5 --- `mass_com_calculator.py` --- Key Specifications
+
+### 11.1 Core Volume Integral
+
+```python
+def compute_component_mass_com(
+    phi: PhiGrid,
+    density_kgm3: float,
+) -> ComponentMassCOM:
+    """
+    Compute mass and COM from phi grid.
+
+    Solid cells: phi.grid < 0.0
+    Cell volume: GRID_SPACING_M^3 metres^3
+
+    volume = count(solid cells) x GRID_SPACING_M^3
+    mass = volume x density_kgm3
+
+    COM x = origin_x + mean(ix) x GRID_SPACING_M   (for all solid cell indices ix)
+    COM y = origin_y + mean(iy) x GRID_SPACING_M
+    COM z = origin_z + mean(iz) x GRID_SPACING_M
+
+    If no solid cells: return zero mass, COM at grid origin. Log a warning.
+    After computing COM: call _assert_com_physical() to catch units bugs.
+    Return ComponentMassCOM(name=phi.component, mass_kg=..., com_x_m=..., com_y_m=..., com_z_m=...)
+    """
+```
+
+### 11.2 Sidepod Pair
+
+```python
+def compute_sidepod_pair_mass_com(right_phi: PhiGrid) -> ComponentMassCOM:
+    """
+    The right sidepod phi grid represents the right half only.
+    The left sidepod is its y-mirror.
+    The pair mass = 2 x right mass.
+    The pair COM: x = right COM x, y = 0.0 (cancels by symmetry), z = right COM z.
+
+    Returns ComponentMassCOM(name="sidepod", mass_kg=2*right_mass, com_x_m=right_x,
+                              com_y_m=0.0, com_z_m=right_z)
+    """
+```
+
+### 11.3 Full Component List
+
+```python
+def compute_all_machined_components(
+    nose_phi: PhiGrid,
+    sidepod_phi: PhiGrid,   # right half
+    rearpod_phi: PhiGrid,
+    body_phi: PhiGrid,
+) -> list[ComponentMassCOM]:
+    """
+    Returns list of exactly 4 ComponentMassCOM objects:
+    [nose, sidepod_pair, rearpod, main_body]
+    in this exact order.
+    The list is passed directly to Part 2's mass_com_ingest.ingest_mass_com().
+    """
+    return [
+        compute_component_mass_com(nose_phi,   get_density("nose")),
+        compute_sidepod_pair_mass_com(sidepod_phi),
+        compute_component_mass_com(rearpod_phi, get_density("rearpod")),
+        compute_component_mass_com(body_phi,    get_density("main_body")),
+    ]
+```
+
+---

@@ -1,0 +1,15 @@
+## 16. Part 2 Interface Contract (Exact Handshake)
+
+Every row is a real function/type that exists in Part 2 right now.
+
+| Part 1 output | Part 2 receiver | Python type | Hard constraint |
+|---|---|---|---|
+| 4x `ComponentMassCOM` | `mass_com_ingest.ingest_mass_com(machined_components, fixed_hardware)` | `list[ComponentMassCOM]` from `physics_contract` | Names: `"nose"`, `"sidepod"`, `"rearpod"`, `"main_body"`. Sidepod = pair (massx2, com_y=0.0). |
+| `FixedHardwareSpec` | `mass_com_ingest.ingest_mass_com(..., fixed_hardware)` | `FixedHardwareSpec` from `mass_com_ingest` | `co2_cartridge_mass_kg` MUST be `0.023` +/- 1e-9. Part 2 raises on any other value. |
+| `com_z_m` from full mass report | `race_objective_adapter._assert_physical_inputs` | `float` metres | Must be in `[0.018, 0.042]` m. Wider Part 1 guard: `[0.005, 0.060]`. Violation = 10^15 s race time. |
+| Right-half STL | `cfd_wrapper.run_half_car_cfd(stl_path)` | `str` path | Must pass `trimesh.is_watertight`. All vertices have y >= -1e-6. Part 2 raises `CFDRunError` otherwise. |
+| `phi_grid_snapshot_paths` | `CandidateRecord.phi_grid_snapshot_paths` | `dict[str,str]` | Keys exactly: `{"nose","sidepod","rearpod","main_body"}`. Values are `.npy` absolute paths. |
+| `lifecycle_state` | `CandidateRecord.lifecycle_state` | `str` | Must be one of the 8 strings in `ALLOWED_LIFECYCLE_STATES`. Part 2 raises at construction if invalid. |
+| Adjoint sensitivity | `adjoint_contract.package_gradient_bundle()` -> S8 | `np.ndarray` | Right-half surface only (CONFIRMED). Part 3 routes from Part 2 adjoint -> S8. |
+
+---

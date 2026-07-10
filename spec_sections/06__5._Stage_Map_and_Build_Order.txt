@@ -1,0 +1,39 @@
+## 5. Stage Map and Build Order
+
+Build in this exact order. Do not skip stages. Do not build out of order.
+
+```
+BUILD ORDER:
+
+Step 1   Write S1: geometry_contract.py
+         Reason: everything imports from here; no dependencies
+
+Step 2   Write S6: fixed_hardware.py
+         Reason: forbidden cylinders must exist before bounding volumes
+
+Step 3   Write S2: bounding_volumes.py
+         Reason: volumes must exist before grids can be sized
+
+Step 4   Write S3: phi_grid.py
+         Reason: grid class needed by S5, S4, S8
+
+Step 5   Write S5: mass_com_calculator.py
+         Reason: needed by integration test; pure phi consumer
+
+Step 6   Write S4: surface_extraction.py (Stages 1+2 first, then 3+4+5+6)
+         Reason: S9 and S7 depend on it
+
+Step 7   Write S9: quality_gates.py
+         Reason: calls S4 and S7; drives lifecycle states
+
+Step 8   Write S7: stl_assembler.py
+         Reason: depends on S4 meshes
+
+Step 9   Write integration test
+         Reason: confirms S1->S7 chain works end-to-end with Part 2's real types
+
+Step 10  Write S8: phi_updater.py
+         Reason: nothing in S1-S9 calls it; it is the Part 3 interface only
+```
+
+---

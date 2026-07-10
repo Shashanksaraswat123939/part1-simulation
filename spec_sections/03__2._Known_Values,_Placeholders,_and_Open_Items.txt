@@ -1,0 +1,47 @@
+## 2. Known Values, Placeholders, and Open Items
+
+This is the master list of every value in the system. If a value is known, it is stated. If unknown, the placeholder strategy is stated.
+
+### 2.1 Confirmed Values (hard-code these exactly)
+
+| Constant | Value | Unit | Source |
+|---|---|---|---|
+| W minimum | 120.0 | mm | Spec ?Inputs |
+| W maximum | 140.0 | mm | Spec ?Inputs |
+| d_halo minimum | 0.0 | mm | Spec ?Inputs |
+| d_halo maximum | W + 16.0 | mm | Spec ?Inputs (depends on W) |
+| Grid spacing | 0.3 | mm | Spec ?phi Field Representation |
+| Min machining radius | 3.15 | mm | Spec ?Surface Extraction |
+| Nose density | 1000.0 | kg/m^3 | Spec ?Mass and COM table |
+| Sidepod density | 163.0 | kg/m^3 | Spec ?Mass and COM table |
+| Rearpod density | 163.0 | kg/m^3 | Spec ?Mass and COM table |
+| Main body density | 163.0 | kg/m^3 | Spec ?Mass and COM table |
+| CO2 mass | 0.023 | kg | Spec + Part 2 `CO2_CARTRIDGE_MASS_KG` |
+| Number of wheels | 4 | --- | Part 2 locked `race_objective.py` |
+| Wheel radius | 0.015 | m | Part 2 locked `race_objective.py` |
+| Wheel clearance (forbidden zone padding) | 2.0 | mm | Design decision --- do not change without updating sidepod corridor |
+| Attachment strip width | 1.0 | mm | Design decision |
+| Hardware void clearance | 1.0 | mm | Design decision |
+| COM z lower bound (sanity gate) | 0.005 | m | Physical --- below this means units bug |
+| COM z upper bound (sanity gate) | 0.060 | m | Physical --- above this means units bug |
+| COM z polynomial range (Part 2 guard) | [0.018, 0.042] | m | Part 2 audit finding 3.1 |
+| Halo bottom height above track | 24.0 | mm | **CONFIRMED by user** |
+| Halo front edge constraint | Must be aft of front axle | --- | **CONFIRMED by user** (halo x_front > 0.0 m) |
+| Halo position constraint | Must be between canister pocket and front axle in x | --- | **CONFIRMED by user** |
+| CFD symmetry | Right half only | --- | **CONFIRMED by user** |
+| Adjoint domain | Right half (same as CFD) | --- | **CONFIRMED by user --- U3 RESOLVED** |
+| Small inaccessible area threshold | 1e-5 | m^2 | 10 mm^2 --- below this: try to fix |
+| Large inaccessible area threshold | 1e-3 | m^2 | 1000 mm^2 --- above this: kill candidate |
+| Max repair retries | 3 | --- | Spec ?Failure and Recovery |
+
+### 2.2 Placeholder Values (raise NotImplementedError with ? UNRESOLVED label)
+
+| ID | What is missing | Where placeholder goes | Message to write |
+|---|---|---|---|
+| U1 | Halo cross-section shape in y-z plane (the exact polygon or voxel mask of the halo tube) | `fixed_hardware.py::place_halo_void()` | `"? UNRESOLVED U1: Halo cross-section shape (y-z polygon vertices in mm) not provided. Measure physical halo hardware and call place_halo_void(cross_section_yz_mm=...)."` |
+| U2 | CO2 canister legal position (x, y, z in mm) | `fixed_hardware.py::place_canister_void()` | `"? UNRESOLVED U2: CO2 canister legal position not confirmed from competition rules. Provide canister_com_mm=(x,y,z) from the official STEM Racing rule sheet."` |
+| U4 | UAE regulation envelope polygon | `surface_extraction.py::_stage5_rule_checker()` | `"? UNRESOLVED U4: UAE competition regulation envelope polygon not provided. Rule checker cannot validate legal envelope until these dimensions are supplied."` |
+| U5 | Rear wing fixed position (x, y, z in mm) | `fixed_hardware.py::place_fixed_hardware()` | `"? UNRESOLVED U5: Rear wing fixed position coordinate not confirmed. Provide rear_wing_com_mm=(x,y,z) from competition rules."` |
+| U6 | Absolute bounding box dimensions (y-extents, z-extents, rearpod length) for all components | `bounding_volumes.py::compute_bounding_volumes()` | `"? UNRESOLVED U6: Car envelope dimensions (y-half-width, z-floor, z-top per component, rearpod max length) not provided from UAE competition rules."` |
+
+---

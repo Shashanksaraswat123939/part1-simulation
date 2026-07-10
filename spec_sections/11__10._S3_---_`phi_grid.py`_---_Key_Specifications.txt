@@ -1,0 +1,158 @@
+## 10. S3 --- `phi_grid.py` --- Key Specifications
+
+(Full implementation follows S1/S6/S2 patterns above. Every method listed here must be implemented with the exact signature shown.)
+
+### 10.1 Class Signature
+
+```python
+@dataclass
+class PhiGrid:
+    component: str                  # "nose"|"sidepod"|"rearpod"|"main_body"
+    bv: BoundingRegion              # from S2 --- defines shape and valid region
+    grid: np.ndarray                # float32, shape (nx, ny, nz)
+    hard_mask_solid: np.ndarray     # bool, shape (nx,ny,nz) --- forced phi < 0
+    hard_mask_air:   np.ndarray     # bool, shape (nx,ny,nz) --- forced phi > 0
+    # hard_mask_air includes: bbox walls + forbidden zones + hardware voids + invalid region
+```
+
+### 10.2 Initialization
+
+```python
+def init(self, mode: str = "sphere") -> None:
+    """
+    Initialize phi field.
+
+    mode="sphere":
+        Compute signed distance to sphere inscribed in bounding volume.
+        Centre at (nx/2, ny/2, nz/2) in grid index space.
+        Radius = 0.7 x min(nx, ny, nz) / 2 x GRID_SPACING_M
+        phi[i,j,k] = sqrt((i-cx)^2 + (j-cy)^2 + (k-cz)^2) x GRID_SPACING_M - radius
+        Result: phi < 0 inside sphere, phi > 0 outside, phi = 0 on surface.
+        dtype: float32.
+
+    mode="slab":
+        phi < 0 in lower half of z dimension, phi > 0 in upper half.
+        Used for sidepod test fixtures.
+
+    mode="random":
+        sphere phi field + smooth random noise at amplitude 0.5 x GRID_SPACING_M.
+        Noise is generated with np.random.default_rng(seed=42 unless seed provided).
+        Used by Part 3's evolutionary perturbation.
+
+    After computing initial values, MUST call apply_hard_constraints().
+    """
+```
+
+### 10.3 Hard Constraint Setup
+
+Call `build_hard_masks()` once at construction time. This computes the `hard_mask_solid` and `hard_mask_air` arrays from the bounding region and void masks.
+
+```python
+@staticmethod
+def build_hard_masks(
+    bv: BoundingRegion,
+    void_masks: list[np.ndarray],     # list of bool arrays, each shape (nx,ny,nz)
+                                       # cells where phi must be > 0 (hardware voids etc.)
+    attachment_faces: list[str],       # which faces have attachment strips
+                                       # e.g. ["rear", "front", "inner_y"]
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Returns (hard_mask_solid, hard_mask_air).
+
+    hard_mask_solid: cells forced phi < 0 (attachment faces)
+    hard_mask_air:   cells forced phi > 0 = union of:
+                     - 1-cell border around the bounding volume
+                     - all void_masks (hardware voids, forbidden zones)
+                     - cells outside bv.valid_mask() (non-rectangular region)
+
+    Attachment face strips (ATTACHMENT_STRIP_MM wide = ceil(1.0/0.3) = 4 cells):
+        "rear"    -> x = nx-1 to nx-1-3  (4 cells from rear face, all j,k)
+        "front"   -> x = 0 to 3           (4 cells from front face)
+        "inner_y" -> y = 0 to 3           (4 cells from y=0 face, for sidepod)
+
+    Bounding box walls (1-cell border):
+        x = 0, x = nx-1
+        y = 0, y = ny-1
+        z = 0, z = nz-1
+
+    Call _validate_masks() after building to confirm no overlap.
+    """
+```
+
+```python
+def _validate_masks(self) -> None:
+    """
+    Raise ValueError if any cell is in both hard_mask_solid and hard_mask_air.
+    This indicates a setup error (e.g. attachment face inside a void region).
+    """
+    overlap = self.hard_mask_solid & self.hard_mask_air
+    n_overlap = int(overlap.sum())
+    if n_overlap > 0:
+        raise ValueError(
+            f"{self.component}: {n_overlap} cells are in BOTH solid and air masks. "
+            f"This is a constraint setup error. Check: do any void masks overlap "
+            f"with attachment face strips? Check attachment face coordinates vs "
+            f"hardware void positions."
+        )
+```
+
+### 10.4 Hard Constraint Table Per Component
+
+| Component | hard_mask_solid faces | hard_mask_air additions |
+|---|---|---|
+| nose | rear face (x = nx-4 to nx-1, all y,z) | bbox border + `bv.valid_mask()` complement |
+| sidepod | inner y face (y = 0 to 3, all x,z) | bbox border + wheel forbidden zone masks + `bv.valid_mask()` complement |
+| rearpod | front face (x = 0 to 3, all y,z) | bbox border + `bv.valid_mask()` complement |
+| main_body | sidepod attachment walls (thin y strip at y_sidepod_inner grid index) | bbox border + halo void + canister void + front axle void + rear axle void + `bv.valid_mask()` complement |
+
+### 10.5 Save and Load
+
+```python
+def save(self, candidate_id: str, out_dir: str) -> str:
+    """
+    Save grid as .npy file.
+    Filename: phi_{component}_{candidate_id}.npy
+    Returns: absolute path string.
+    This path goes into CandidateRecord.phi_grid_snapshot_paths[component].
+    """
+    path = Path(out_dir) / f"phi_{self.component}_{candidate_id}.npy"
+    np.save(str(path), self.grid)
+    return str(path.resolve())
+
+def load(self, path: str) -> None:
+    """
+    Load grid from .npy file. Re-enforce hard constraints after load.
+    Raise ValueError if loaded shape != self.bv.shape.
+    """
+    loaded = np.load(path).astype(np.float32)
+    if loaded.shape != self.bv.shape:
+        raise ValueError(
+            f"{self.component}: loaded grid shape {loaded.shape} != "
+            f"expected {self.bv.shape}. Wrong file or wrong bounding volume."
+        )
+    self.grid = loaded
+    self.apply_hard_constraints()
+```
+
+### 10.6 Warm-Start Remap
+
+```python
+def remap(self, new_bv: BoundingRegion, new_hard_masks: tuple[np.ndarray, np.ndarray]) -> "PhiGrid":
+    """
+    Trilinear interpolation of self.grid into a new bounding volume.
+    Returns a NEW PhiGrid. self is not modified.
+
+    Steps:
+    1. Compute coordinate mapping from new grid indices -> old grid indices
+    2. scipy.ndimage.map_coordinates(self.grid, coords, order=1, mode='nearest')
+    3. Construct new PhiGrid with new_bv and new hard masks
+    4. Set new_phi.grid = interpolated result (float32)
+    5. Call new_phi.apply_hard_constraints()
+    6. Return new_phi
+
+    Edge case: if new_bv.shape == self.bv.shape, still run the interpolation
+    (origin may have shifted). Do not short-circuit with a copy.
+    """
+```
+
+---

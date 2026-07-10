@@ -1,0 +1,24 @@
+## 3. Outer Loop Scalars
+
+Part 3 sets these before each outer iteration. Part 1 recomputes all geometry from them.
+
+```
+W      in [120.0, 140.0] mm     wheelbase
+                                 Coarse sweep: 21 values, W = 120, 121, ..., 140 mm
+                                 Refined sweep: 0.5 mm steps near top 5 candidates
+                                 Front axle at x = 0.0 m (always)
+                                 Rear axle at x = W/1000 m
+
+d_halo in [0.0, W + 16.0] mm   halo-to-canister fore-aft distance
+                                 When d_halo = 0: nose volume is degenerate (1 cell thick)
+                                 This is NOT an error. Handle it.
+```
+
+When W changes:
+1. Rear axle moves to new x position
+2. Both forbidden-zone cylinders shift (rear one moves)
+3. Sidepod corridor x_min and x_max both recompute
+4. All four phi grids remap via `PhiGrid.remap(new_bv)`
+5. Hard constraints re-enforced in all grids after remap
+
+---

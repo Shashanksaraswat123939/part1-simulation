@@ -1,0 +1,31 @@
+## 1. Repository Layout
+
+Exact directory structure. Create every file listed. Do not add extra files.
+
+```
+part1_geometry/
+??? geometry_contract.py          S1
+??? fixed_hardware.py             S6
+??? bounding_volumes.py           S2
+??? phi_grid.py                   S3
+??? mass_com_calculator.py        S5
+??? surface_extraction.py         S4
+??? quality_gates.py              S9
+??? stl_assembler.py              S7
+??? phi_updater.py                S8
+??? tests/
+?   ??? __init__.py               (empty file --- required for imports in test files)
+?   ??? test_geometry_contract.py
+?   ??? test_fixed_hardware.py
+?   ??? test_bounding_volumes.py
+?   ??? test_phi_grid.py
+?   ??? test_mass_com_calculator.py
+?   ??? test_surface_extraction.py
+?   ??? test_quality_gates.py
+?   ??? test_stl_assembler.py
+?   ??? test_phi_updater.py
+?   ??? test_integration_part1_part2.py
+??? run_all_tests.py
+```
+
+---

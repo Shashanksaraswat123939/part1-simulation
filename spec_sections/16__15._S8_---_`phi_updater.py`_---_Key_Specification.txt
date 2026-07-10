@@ -1,0 +1,123 @@
+## 15. S8 --- `phi_updater.py` --- Key Specifications
+
+### 15.1 Adjoint Symmetry (RESOLVED)
+
+OpenFOAM adjoint runs on the right-half domain (CONFIRMED). Sensitivity field covers right-half surface only.
+
+```python
+def apply_adjoint_sensitivity_symmetric(
+    phi_grids: dict[str, PhiGrid],
+    right_half_sensitivity: np.ndarray,   # surface sensitivity on right-half mesh vertices
+    right_half_mesh: trimesh.Trimesh,     # the right-half mesh (same as CFD mesh)
+    dt: float,
+    gradient_weights: dict[str, float],
+) -> None:
+    """
+    Apply adjoint sensitivity to all phi grids.
+
+    For nose, rearpod, main_body (symmetric components):
+        Sensitivity applies to the full grid (both y sides).
+        Map surface sensitivity -> volume velocity field using extend_velocity().
+        Apply hj_update() to the full grid.
+
+    For sidepod (right half only):
+        Sensitivity applies to right-half sidepod only.
+        The left sidepod is always the mirror --- it does not have its own phi grid.
+        Apply hj_update() to the right sidepod grid directly.
+        The left sidepod's geometry updates automatically when S7 mirrors at next extraction.
+
+    CFD runs on right half, adjoint gives dObjective/dSurface on right-half mesh.
+    For symmetric components, the right-half sensitivity is mirrored analytically:
+        - x and z components of sensitivity: same on both sides (symmetric)
+        - y component: negated on left side
+    Since the main_body, nose, and rearpod grids cover the full car (both y sides),
+    the sensitivity must be mapped to the volume considering symmetry.
+    Implementation: compute the volume velocity field from right-half sensitivity,
+    then apply it to the full grid (the symmetry is implicit in the phi grid structure).
+    """
+```
+
+### 15.2 Hamilton-Jacobi Update
+
+```python
+def hj_update(phi: PhiGrid, velocity: np.ndarray, dt: float) -> None:
+    """
+    phi_new = phi_old - dt x F x |?phi|
+
+    |?phi| computed via Godunov upwind scheme:
+        For each interior cell (i,j,k):
+            grad_x = Godunov_x(phi.grid, i, j, k)
+            grad_y = Godunov_y(phi.grid, i, j, k)
+            grad_z = Godunov_z(phi.grid, i, j, k)
+            |?phi| = sqrt(grad_x^2 + grad_y^2 + grad_z^2)
+
+    Godunov scheme for x-component (same for y and z by symmetry):
+        D_minus = (phi[i,j,k] - phi[i-1,j,k]) / GRID_SPACING_M
+        D_plus  = (phi[i+1,j,k] - phi[i,j,k]) / GRID_SPACING_M
+        if phi[i,j,k] > 0:
+            G = max(max(D_minus, 0)^2, min(D_plus, 0)^2)
+        else:
+            G = max(min(D_minus, 0)^2, max(D_plus, 0)^2)
+        grad_x = sqrt(G)  [then combine all three for |?phi|]
+
+    After computing: phi.grid -= dt * velocity * grad_mag
+    After update: call phi.apply_hard_constraints()
+
+    Boundary cells (i=0, i=nx-1, etc.) are handled by hard constraints,
+    so they do not need one-sided differences --- the constraint enforcer overwrites them.
+    """
+
+def reinitialise_sdf(phi: PhiGrid, n_steps: int = 20, dt_reinit: float = 0.3) -> None:
+    """
+    Reinitialise phi as a signed distance field.
+    Solve ?phi/?? + sign(phi)(|?phi| - 1) = 0 for n_steps pseudo-time steps.
+    Use Godunov scheme for |?phi| (same as hj_update).
+    After all steps: call phi.apply_hard_constraints().
+
+    After reinit: |?phi| should be ? 1.0 everywhere (check: RMS should be in [0.95, 1.05]).
+    """
+
+def extend_velocity(
+    phi_grid: np.ndarray,
+    surface_velocity: np.ndarray,
+    n_steps: int = 10,
+    dt_ext: float = 0.1,
+) -> np.ndarray:
+    """
+    Propagate surface velocity into the volume.
+    Solve: ?F/?? + sign(phi) ?phi ? ?F = 0 for n_steps pseudo-time steps.
+    Returns F: velocity field defined everywhere in the volume.
+
+    surface_velocity: shape (nx, ny, nz). Non-zero only near phi=0 surface.
+                      Usually computed by mapping adjoint sensitivity from mesh
+                      vertices to nearby grid cells (nearest-cell assignment or
+                      trilinear splatting).
+    """
+
+def combine_gradients(
+    aero_gradient: np.ndarray,
+    mass_gradient: np.ndarray,
+    com_gradient:  np.ndarray,
+    mfg_gradient:  np.ndarray,
+    w_aero: float,
+    w_mass: float,
+    w_com:  float,
+    w_mfg:  float,
+) -> np.ndarray:
+    """
+    Normalize each gradient to unit RMS, then weighted sum.
+
+    def _normalize(g):
+        rms = sqrt(mean(g^2))
+        return g / rms if rms > 1e-12 else np.zeros_like(g)
+
+    return (_normalize(aero)*w_aero + _normalize(mass)*w_mass +
+            _normalize(com)*w_com + _normalize(mfg)*w_mfg)
+
+    This is required because gradient terms have different units and scales.
+    Naive addition (without normalization) produces optimizer bias toward
+    whichever gradient has the largest magnitude --- typically aero.
+    """
+```
+
+---

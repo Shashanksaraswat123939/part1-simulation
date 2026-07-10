@@ -1,0 +1,49 @@
+## 14. S7 --- `stl_assembler.py` --- Key Specifications
+
+### 14.1 Left Sidepod Mirror
+
+```python
+def _mirror_right_to_left(right_mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """
+    Mirror right sidepod to create left sidepod.
+
+    Steps (order matters):
+    1. left = right_mesh.copy()
+    2. left.vertices[:, 1] *= -1.0      # flip y coordinate
+    3. left.invert()                    # flip face winding (normals reversed by mirror)
+    4. trimesh.repair.fix_normals(left) # ensure consistent outward normals
+    5. return left
+    """
+```
+
+### 14.2 Assembly and Export
+
+```python
+def assemble_stl(
+    meshes: dict[str, trimesh.Trimesh],
+    candidate_id: str,
+    out_dir: str,
+) -> tuple[str, str]:
+    """
+    Returns (full_stl_path, half_stl_path).
+
+    Full car:
+    1. Mirror right sidepod -> left sidepod
+    2. trimesh.util.concatenate([nose, sidepod_right, sidepod_left, rearpod, main_body])
+    3. trimesh.repair.fix_winding(full_car)
+    4. trimesh.repair.fix_normals(full_car)
+    5. if not full_car.is_watertight: raise MeshQualityFailure("full car not watertight")
+    6. full_car.export(out_dir/car_{candidate_id}_full.stl)
+
+    Right-half STL (for Part 2 CFD --- CONFIRMED half-car simulation):
+    1. trimesh.intersections.slice_mesh_plane(full_car, plane_normal=(0,1,0),
+                                               plane_origin=(0,0,0), cap=True)
+    2. if not right_half.is_watertight: raise MeshQualityFailure("right half not watertight")
+    3. Verify: all vertices have y >= -1e-6 (numerical tolerance)
+    4. right_half.export(out_dir/car_{candidate_id}_half.stl)
+
+    Return (full_path, half_path) as absolute path strings.
+    """
+```
+
+---

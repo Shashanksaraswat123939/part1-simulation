@@ -1,0 +1,15 @@
+## 4. Component Summary
+
+| Component | Has phi grid | Density | Which half | Key constraint |
+|---|---|---|---|---|
+| Nose cone | Yes | 1000.0 kg/m^3 | Full (both y sides, symmetric) | Rear face phi < 0 (attaches to body); bbox phi > 0 |
+| Right sidepod | Yes (right half only) | 163.0 kg/m^3 | Right (y >= 0) | Inner face phi < 0 (attaches to body); wheel forbidden zones phi > 0 |
+| Rearpod | Yes | 163.0 kg/m^3 | Full (symmetric) | Front face phi < 0 (attaches to body); bbox phi > 0 |
+| Main body | Yes | 163.0 kg/m^3 | Full (symmetric) | Hardware voids phi > 0; sidepod walls phi < 0 |
+| CO2 cartridge | No | 23 g fixed | --- | Fixed mass, fixed position |
+| Rear wing | No | known kg fixed | --- | Fixed mass, fixed position |
+| Wheels + axles | No | known kg fixed | --- | Fixed mass, fixed geometry |
+
+The left sidepod is always the right sidepod reflected across y=0. It is never stored as a separate grid. It is generated at STL assembly time.
+
+---

@@ -1,0 +1,449 @@
+## 9. S2 --- `bounding_volumes.py` (Complete File Specification)
+
+### 9.1 Purpose
+
+Compute the legal bounding region for each of the four phi-grid components given W, d_halo, and the forbidden cylinders from S6. The sidepod corridor is the critical computation --- it changes with every W step.
+
+### 9.2 Sidepod Corridor Derivation (Most Important Geometry)
+
+```
+In front-to-rear (x) direction:
+
+  Front wheel forbidden cylinder:
+    x_max = front_cylinder.x_max_m  (furthest-back edge of front wheel assembly)
+
+  Rear wheel forbidden cylinder:
+    x_min = rear_cylinder.x_min_m   (furthest-forward edge of rear wheel assembly)
+
+  Sidepod corridor:
+    sidepod_x_min = front_cylinder.x_max_m + WHEEL_CLEARANCE_M
+    sidepod_x_max = rear_cylinder.x_min_m  - WHEEL_CLEARANCE_M
+    sidepod_length = sidepod_x_max - sidepod_x_min
+
+  As W increases (rear axle moves back):
+    rear_cylinder.x_min_m increases -> sidepod_x_max increases -> corridor gets longer
+
+  As W decreases (rear axle moves forward):
+    rear_cylinder.x_min_m decreases -> sidepod_x_max decreases -> corridor gets shorter
+
+  At W=120 mm, sidepod_length must be > 0 (otherwise the rules are violated).
+  If sidepod_length <= 0, raise ValueError immediately.
+```
+
+### 9.3 Full File
+
+```python
+"""
+bounding_volumes.py --- Legal bounding regions for all phi-grid components.
+
+Contains:
+  - BoundingRegion class (arbitrary shape support)
+  - _point_in_polygon_vectorised (ray-casting polygon test)
+  - BoundingVolumes dataclass (all four volumes for one W, d_halo)
+  - compute_bounding_volumes() entry point
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Optional
+import numpy as np
+import math
+
+from geometry_contract import (
+    GRID_SPACING_M, GRID_SPACING_MM, WHEEL_CLEARANCE_M,
+    mm_to_m, grid_cells, validate_W, validate_d_halo,
+)
+from fixed_hardware import ForbiddenCylinder
+
+
+# ?? BoundingRegion and polygon helpers ????????????????????????????????????
+# (Paste the full BoundingRegion class and _point_in_polygon_vectorised
+#  function from Section 7.2 here --- they live in this file.)
+
+
+@dataclass(frozen=True)
+class BoundingVolumes:
+    """
+    All four bounding regions for one (W, d_halo) configuration.
+
+    Each region defines the legal 3D space for one component's phi grid.
+    The region knows its own shape (nx, ny, nz) and origin in metres.
+
+    sidepod_x_min_m and sidepod_x_max_m are stored separately for use
+    by PhiGrid's hard constraint setup and phi_updater's symmetry logic.
+    """
+    nose:      BoundingRegion
+    sidepod:   BoundingRegion   # RIGHT half only (y >= 0 side)
+    rearpod:   BoundingRegion
+    main_body: BoundingRegion
+
+    # Sidepod corridor limits --- stored for external use
+    sidepod_x_min_m: float
+    sidepod_x_max_m: float
+
+    # The W and d_halo that produced this configuration
+    W_mm: float
+    d_halo_mm: float
+
+    @property
+    def sidepod_length_m(self) -> float:
+        return self.sidepod_x_max_m - self.sidepod_x_min_m
+
+    @property
+    def W_m(self) -> float:
+        return mm_to_m(self.W_mm)
+
+    def get(self, component: str) -> BoundingRegion:
+        """Look up a region by component name."""
+        mapping = {
+            "nose": self.nose,
+            "sidepod": self.sidepod,
+            "rearpod": self.rearpod,
+            "main_body": self.main_body,
+        }
+        if component not in mapping:
+            raise ValueError(f"Unknown component '{component}'. Valid: {list(mapping)}")
+        return mapping[component]
+
+
+def compute_bounding_volumes(
+    W_mm: float,
+    d_halo_mm: float,
+    front_cylinder: ForbiddenCylinder,
+    rear_cylinder: ForbiddenCylinder,
+    rule_envelope: "RuleEnvelope",
+) -> BoundingVolumes:
+    """
+    Compute all four bounding volumes given outer loop scalars and wheel geometry.
+
+    Args:
+        W_mm: wheelbase in mm. Must be in [120, 140].
+        d_halo_mm: halo-canister distance in mm. Must be in [0, W+16].
+        front_cylinder: from S6, defines front wheel forbidden zone
+        rear_cylinder: from S6, defines rear wheel forbidden zone
+        rule_envelope: RuleEnvelope containing absolute car dimensions.
+                       ? UNRESOLVED U6 until UAE rule dimensions are confirmed.
+
+    Returns:
+        BoundingVolumes with all four regions.
+    """
+    validate_W(W_mm)
+    validate_d_halo(d_halo_mm, W_mm)
+
+    # ? UNRESOLVED U6: Absolute envelope dimensions not yet provided.
+    # The RuleEnvelope must supply:
+    #   y_body_half_m: half-width of car body in y (both sides)
+    #   y_sidepod_inner_m: inner wall of sidepod in y (outer edge of body)
+    #   y_sidepod_outer_m: outer edge of sidepod in y
+    #   z_floor_m: bottom of all volumes (should be 0.0 or close to track surface)
+    #   z_nose_top_m: maximum z of nose volume
+    #   z_sidepod_top_m: maximum z of sidepod volume
+    #   z_rearpod_top_m: maximum z of rearpod volume
+    #   z_body_top_m: maximum z of main body volume
+    #   rearpod_max_length_m: maximum x-length of rearpod from rear axle
+    if rule_envelope is None:
+        raise NotImplementedError(
+            "? UNRESOLVED U6: UAE competition regulation envelope dimensions not provided. "
+            "Create a RuleEnvelope object with y_body_half_m, y_sidepod_inner_m, "
+            "y_sidepod_outer_m, z_floor_m, z_nose_top_m, z_sidepod_top_m, "
+            "z_rearpod_top_m, z_body_top_m, rearpod_max_length_m --- all in metres."
+        )
+
+    W_m = mm_to_m(W_mm)
+    d_halo_m = mm_to_m(d_halo_mm)
+
+    # ?? Sidepod corridor (THE W-DEPENDENT COMPUTATION) ????????????????????
+    sidepod_x_min = front_cylinder.x_max_m + WHEEL_CLEARANCE_M
+    sidepod_x_max = rear_cylinder.x_min_m  - WHEEL_CLEARANCE_M
+    sidepod_length = sidepod_x_max - sidepod_x_min
+
+    if sidepod_length <= 0.0:
+        raise ValueError(
+            f"Sidepod corridor has zero or negative length at W={W_mm} mm: "
+            f"x_min={sidepod_x_min:.5f} m, x_max={sidepod_x_max:.5f} m, "
+            f"length={sidepod_length*1000:.2f} mm. "
+            f"Check wheel clearance ({WHEEL_CLEARANCE_M*1000:.1f} mm) and "
+            f"wheel half-width settings. The rules require a positive sidepod corridor."
+        )
+
+    re = rule_envelope   # shorthand
+
+    # ?? Nose volume ????????????????????????????????????????????????????????
+    # x: from 0 (front axle) to d_halo_m
+    # y: from -y_body_half to +y_body_half (full width, symmetric)
+    # z: from z_floor to z_nose_top
+    nose_nx = grid_cells(d_halo_mm)   # might be 1 if d_halo=0
+    nose_ny = grid_cells((re.y_body_half_m * 2) * 1000)
+    nose_nz = grid_cells((re.z_nose_top_m - re.z_floor_m) * 1000)
+    nose = BoundingRegion(
+        component = "nose",
+        origin_m  = (0.0, -re.y_body_half_m, re.z_floor_m),
+        shape     = (nose_nx, nose_ny, nose_nz),
+        # No polygon or voxel override --- nose uses full box
+        polygon_yz_m = None,
+        voxel_mask   = None,
+    )
+
+    # ?? Sidepod volume (right half only, y >= 0) ???????????????????????????
+    # x: from sidepod_x_min to sidepod_x_max (W-dependent!)
+    # y: from y_sidepod_inner to y_sidepod_outer (right side only, y > 0)
+    # z: from z_floor to z_sidepod_top
+    # The polygon_yz_m can be set to a non-rectangular cross-section if needed.
+    # For now, use box mode. Once UAE envelope gives a non-rectangular profile,
+    # replace with polygon_yz_m=[(y1,z1), ...].
+    sp_x_length_mm = (sidepod_x_max - sidepod_x_min) * 1000
+    sp_y_length_mm = (re.y_sidepod_outer_m - re.y_sidepod_inner_m) * 1000
+    sp_z_length_mm = (re.z_sidepod_top_m - re.z_floor_m) * 1000
+    sidepod = BoundingRegion(
+        component = "sidepod",
+        origin_m  = (sidepod_x_min, re.y_sidepod_inner_m, re.z_floor_m),
+        shape     = (
+            grid_cells(sp_x_length_mm),
+            grid_cells(sp_y_length_mm),
+            grid_cells(sp_z_length_mm),
+        ),
+        polygon_yz_m = None,   # Switch to polygon for non-rectangular cross-sections
+        voxel_mask   = None,
+    )
+
+    # ?? Rearpod volume ?????????????????????????????????????????????????????
+    # x: from W_m (rear axle) to W_m + rearpod_max_length_m
+    # y: from -y_body_half to +y_body_half
+    # z: from z_floor to z_rearpod_top
+    rp_x_mm = re.rearpod_max_length_m * 1000
+    rp_y_mm = re.y_body_half_m * 2 * 1000
+    rp_z_mm = (re.z_rearpod_top_m - re.z_floor_m) * 1000
+    rearpod = BoundingRegion(
+        component = "rearpod",
+        origin_m  = (W_m, -re.y_body_half_m, re.z_floor_m),
+        shape     = (
+            grid_cells(rp_x_mm),
+            grid_cells(rp_y_mm),
+            grid_cells(rp_z_mm),
+        ),
+        polygon_yz_m = None,
+        voxel_mask   = None,
+    )
+
+    # ?? Main body volume ???????????????????????????????????????????????????
+    # x: from 0 (front axle) to W_m + rearpod_max_length_m
+    # y: from -y_body_half to +y_body_half
+    # z: from z_floor to z_body_top
+    # Note: this x range overlaps with nose and rearpod.
+    # That is intentional --- the main body grid covers the full car length.
+    # Hard constraints in S3 handle the attachment at those interfaces.
+    body_x_mm = (W_m + re.rearpod_max_length_m) * 1000
+    body_y_mm = re.y_body_half_m * 2 * 1000
+    body_z_mm = (re.z_body_top_m - re.z_floor_m) * 1000
+    main_body = BoundingRegion(
+        component = "main_body",
+        origin_m  = (0.0, -re.y_body_half_m, re.z_floor_m),
+        shape     = (
+            grid_cells(body_x_mm),
+            grid_cells(body_y_mm),
+            grid_cells(body_z_mm),
+        ),
+        polygon_yz_m = None,
+        voxel_mask   = None,
+    )
+
+    return BoundingVolumes(
+        nose             = nose,
+        sidepod          = sidepod,
+        rearpod          = rearpod,
+        main_body        = main_body,
+        sidepod_x_min_m  = sidepod_x_min,
+        sidepod_x_max_m  = sidepod_x_max,
+        W_mm             = W_mm,
+        d_halo_mm        = d_halo_mm,
+    )
+
+
+@dataclass
+class RuleEnvelope:
+    """
+    ? UNRESOLVED U6: Absolute car envelope dimensions from UAE competition rules.
+
+    All values in metres. Must be provided before bounding volumes can be computed.
+    Fill these in once UAE rules are confirmed.
+
+    Until then, any call to compute_bounding_volumes() raises NotImplementedError.
+    """
+    y_body_half_m:       float   # Half-width of car body in y (e.g. 0.030 m = 30 mm)
+    y_sidepod_inner_m:   float   # Inner y-edge of sidepod corridor (outer edge of body)
+    y_sidepod_outer_m:   float   # Outer y-edge of sidepod
+    z_floor_m:           float   # Bottom of all components (usually 0.0 m = track surface)
+    z_nose_top_m:        float   # Maximum z of nose volume
+    z_sidepod_top_m:     float   # Maximum z of sidepod volume
+    z_rearpod_top_m:     float   # Maximum z of rearpod volume
+    z_body_top_m:        float   # Maximum z of main body volume
+    rearpod_max_length_m: float  # Max x-extent of rearpod from rear axle
+```
+
+### 9.4 Tests for S2 (`tests/test_bounding_volumes.py`)
+
+```python
+"""
+Tests for bounding_volumes.py.
+Use a stub RuleEnvelope with made-up but physically reasonable dimensions.
+Once U6 is resolved, update the stub values.
+"""
+import sys; from pathlib import Path; sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from bounding_volumes import (
+    BoundingRegion, BoundingVolumes, RuleEnvelope, compute_bounding_volumes,
+    _point_in_polygon_vectorised,
+)
+from fixed_hardware import ForbiddenCylinder
+from geometry_contract import R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m
+import numpy as np
+
+def _pass(n): print(f"PASS {n}")
+def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
+
+# Stub rule envelope with physically plausible dimensions
+STUB_RE = RuleEnvelope(
+    y_body_half_m       = 0.030,   # 30 mm half-width
+    y_sidepod_inner_m   = 0.030,
+    y_sidepod_outer_m   = 0.060,
+    z_floor_m           = 0.000,
+    z_nose_top_m        = 0.040,
+    z_sidepod_top_m     = 0.035,
+    z_rearpod_top_m     = 0.035,
+    z_body_top_m        = 0.045,
+    rearpod_max_length_m= 0.030,
+)
+
+def _make_cylinders(W_mm):
+    W_m = mm_to_m(W_mm)
+    r = R_WHEEL_M + WHEEL_CLEARANCE_M
+    front = ForbiddenCylinder(0.0, 0.0, 0.015, r, 0.008)
+    rear  = ForbiddenCylinder(W_m, 0.0, 0.015, r, 0.008)
+    return front, rear
+
+def test_sidepod_length_decreases_with_W():
+    bv120 = compute_bounding_volumes(120.0, 10.0, *_make_cylinders(120.0), STUB_RE)
+    bv140 = compute_bounding_volumes(140.0, 10.0, *_make_cylinders(140.0), STUB_RE)
+    assert bv140.sidepod_length_m > bv120.sidepod_length_m, (
+        f"Sidepod should be longer at W=140 than W=120. "
+        f"Got {bv140.sidepod_length_m:.4f} vs {bv120.sidepod_length_m:.4f}"
+    )
+    _pass("test_sidepod_length_decreases_with_W")
+
+def test_sidepod_length_positive_at_W_min():
+    bv = compute_bounding_volumes(120.0, 10.0, *_make_cylinders(120.0), STUB_RE)
+    assert bv.sidepod_length_m > 0, f"sidepod_length={bv.sidepod_length_m:.4f}"
+    _pass("test_sidepod_length_positive_at_W_min")
+
+def test_nose_length_matches_d_halo():
+    from geometry_contract import GRID_SPACING_M
+    d_halo_mm = 20.0
+    bv = compute_bounding_volumes(130.0, d_halo_mm, *_make_cylinders(130.0), STUB_RE)
+    nose_length_m = bv.nose.nx * GRID_SPACING_M
+    assert abs(nose_length_m - mm_to_m(d_halo_mm)) <= GRID_SPACING_M, (
+        f"Nose length {nose_length_m*1000:.2f} mm should ? d_halo={d_halo_mm} mm"
+    )
+    _pass("test_nose_length_matches_d_halo")
+
+def test_d_halo_zero_gives_degenerate_nose():
+    bv = compute_bounding_volumes(130.0, 0.0, *_make_cylinders(130.0), STUB_RE)
+    assert bv.nose.nx == 1, f"nx={bv.nose.nx}, expected 1 for d_halo=0"
+    _pass("test_d_halo_zero_gives_degenerate_nose")
+
+def test_W_out_of_range_raises():
+    for bad_W in [119.9, 140.1, 0.0]:
+        try:
+            compute_bounding_volumes(bad_W, 10.0, *_make_cylinders(130.0), STUB_RE)
+            _fail("test_W_out_of_range_raises", f"W={bad_W} should raise")
+        except ValueError:
+            pass
+    _pass("test_W_out_of_range_raises")
+
+def test_d_halo_out_of_range_raises():
+    try:
+        compute_bounding_volumes(130.0, 147.0, *_make_cylinders(130.0), STUB_RE)
+        _fail("test_d_halo_out_of_range_raises", "d_halo=147 > W+16=146 should raise")
+    except ValueError:
+        _pass("test_d_halo_out_of_range_raises")
+
+def test_all_shapes_are_positive_ints():
+    bv = compute_bounding_volumes(130.0, 15.0, *_make_cylinders(130.0), STUB_RE)
+    for comp in ("nose", "sidepod", "rearpod", "main_body"):
+        region = bv.get(comp)
+        for dim in region.shape:
+            assert isinstance(dim, int) and dim > 0, f"{comp} dim={dim}"
+    _pass("test_all_shapes_are_positive_ints")
+
+def test_rearpod_origin_x_equals_W():
+    bv = compute_bounding_volumes(130.0, 15.0, *_make_cylinders(130.0), STUB_RE)
+    assert abs(bv.rearpod.origin_m[0] - mm_to_m(130.0)) < 1e-9
+    _pass("test_rearpod_origin_x_equals_W")
+
+def test_sidepod_is_right_half_only():
+    bv = compute_bounding_volumes(130.0, 15.0, *_make_cylinders(130.0), STUB_RE)
+    # Sidepod origin y must be >= 0 (right half)
+    assert bv.sidepod.origin_m[1] >= 0.0, (
+        f"Sidepod y origin={bv.sidepod.origin_m[1]:.4f} --- should be >= 0 (right half only)"
+    )
+    _pass("test_sidepod_is_right_half_only")
+
+def test_polygon_point_in_polygon():
+    # Square polygon: (0,0),(1,0),(1,1),(0,1)
+    poly = [(0.0,0.0),(1.0,0.0),(1.0,1.0),(0.0,1.0)]
+    ys = np.array([0.5, 1.5, -0.1, 0.5])
+    zs = np.array([0.5, 0.5,  0.5, 1.5])
+    inside = _point_in_polygon_vectorised(ys, zs, poly)
+    assert inside[0] == True,  "Centre point should be inside"
+    assert inside[1] == False, "Outside y should be outside"
+    assert inside[2] == False, "Outside z should be outside"
+    assert inside[3] == False, "Outside z should be outside"
+    _pass("test_polygon_point_in_polygon")
+
+def test_bounding_region_box_mode_all_valid():
+    region = BoundingRegion("nose", (0.0, -0.015, 0.0), (10, 10, 10))
+    mask = region.valid_mask()
+    assert mask.shape == (10, 10, 10)
+    assert mask.all(), "Box mode: all cells should be valid"
+    _pass("test_bounding_region_box_mode_all_valid")
+
+def test_bounding_region_polygon_mode():
+    # Triangular cross-section in y-z: (0,0),(0.01,0),(0.005,0.01)
+    poly = [(0.0,0.0),(0.01,0.0),(0.005,0.01)]
+    from geometry_contract import GRID_SPACING_M
+    region = BoundingRegion(
+        component="sidepod",
+        origin_m=(0.0, 0.0, 0.0),
+        shape=(5, 50, 50),
+        polygon_yz_m=poly,
+    )
+    mask = region.valid_mask()
+    assert mask.shape == (5, 50, 50)
+    # Centre of triangle in y-z should be inside
+    assert mask.any(), "Some cells should be inside the triangle"
+    _pass("test_bounding_region_polygon_mode")
+
+def test_bounding_region_voxel_mode():
+    vox = np.zeros((5, 10, 10), dtype=bool)
+    vox[2, 5, 5] = True
+    region = BoundingRegion("main_body", (0.0,0.0,0.0), (5,10,10), voxel_mask=vox)
+    mask = region.valid_mask()
+    assert mask[2, 5, 5] == True
+    assert mask[0, 0, 0] == False
+    _pass("test_bounding_region_voxel_mode")
+
+if __name__ == "__main__":
+    test_sidepod_length_decreases_with_W()
+    test_sidepod_length_positive_at_W_min()
+    test_nose_length_matches_d_halo()
+    test_d_halo_zero_gives_degenerate_nose()
+    test_W_out_of_range_raises()
+    test_d_halo_out_of_range_raises()
+    test_all_shapes_are_positive_ints()
+    test_rearpod_origin_x_equals_W()
+    test_sidepod_is_right_half_only()
+    test_polygon_point_in_polygon()
+    test_bounding_region_box_mode_all_valid()
+    test_bounding_region_polygon_mode()
+    test_bounding_region_voxel_mode()
+    print("\nAll bounding_volumes tests passed.")
+```
+
+---

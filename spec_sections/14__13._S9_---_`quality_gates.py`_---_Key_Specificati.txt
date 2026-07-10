@@ -1,0 +1,58 @@
+## 13. S9 --- `quality_gates.py` --- Key Specifications
+
+### 13.1 GateResult
+
+```python
+@dataclass(frozen=True)
+class GateResult:
+    lifecycle_state: str       # Must be in ALLOWED_LIFECYCLE_STATES
+    meshes: Optional[dict[str, trimesh.Trimesh]]  # None if failed before assembly
+    phi_snapshot_paths: dict[str, str]             # ALWAYS populated
+    stl_path: Optional[str]    # None if failed
+    stl_half_path: Optional[str]  # Right-half STL for CFD; None if failed
+    failure_reason: Optional[str]
+
+    def __post_init__(self):
+        if self.lifecycle_state not in ALLOWED_LIFECYCLE_STATES:
+            raise ValueError(
+                f"lifecycle_state='{self.lifecycle_state}' not in allowed set "
+                f"{sorted(ALLOWED_LIFECYCLE_STATES)}. This is a Part 1 bug."
+            )
+        if not self.phi_snapshot_paths:
+            raise ValueError("phi_snapshot_paths must always be populated, even on failure.")
+```
+
+### 13.2 Gate Runner Logic
+
+```python
+def run_quality_gates(
+    phi_grids: dict[str, PhiGrid],
+    candidate_id: str,
+    out_dir: str,
+    max_retries: int = MAX_EXTRACTION_RETRIES,
+) -> GateResult:
+    """
+    STEP 0 (ALWAYS FIRST): Save phi snapshots before any extraction attempt.
+                            Even if everything fails, snapshots exist.
+
+    phi_paths = {name: phi.save(candidate_id, out_dir) for name, phi in phi_grids.items()}
+
+    STEP 1-N: Retry loop (up to max_retries):
+        Try extract_surface() on all components.
+        On success: assemble STL, return "valid_simulated" (or "geometry_repaired" if attempt > 0).
+        On RadiusViolation: if attempt < max_retries-1: continue; else return "geometry_rejected"
+        On AccessibilityFailure(is_large=False): if attempt < max_retries-1: continue; else return "geometry_rejected"
+        On AccessibilityFailure(is_large=True): return "machining_rejected" immediately (no retry)
+        On RuleViolation(is_major=False): if attempt < max_retries-1: continue; else return "rule_rejected"
+        On RuleViolation(is_major=True): return "rule_rejected" immediately (no retry)
+        On MeshQualityFailure: if attempt < max_retries-1: continue; else return "geometry_rejected"
+        On SurfaceExtractionError (base): return "geometry_rejected"
+
+    ALL returned GateResults must have phi_snapshot_paths populated.
+    stl_path is None on any failure.
+    stl_half_path is None on any failure.
+    failure_reason contains str(exception) on failure, None on success.
+    """
+```
+
+---
