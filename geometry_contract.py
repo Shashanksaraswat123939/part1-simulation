@@ -7,9 +7,17 @@ No imports from Part 2 — constants are duplicated deliberately
 to avoid circular dependency. Cross-check tests verify they match.
 
 Coordinate system (matches Part 2 physics_contract.py exactly):
-    x = front to rear   (x=0 = front axle, x=W_m = rear axle)
+    x = front to rear   (x=0 = nose tip, car extends in +x direction)
     y = centerline to right side   (y=0 = symmetry plane)
     z = track upward    (z=0 = track surface)
+
+Key x positions (all derived from outer-loop scalars W and x_front):
+    nose tip         = 0
+    Ref Plane A      = x_front_m - 0.016   (16 mm ahead of front axle, T1.17)
+    front axle       = x_front_m
+    rear axle        = x_front_m + W_m
+    Ref Plane B      = x_front_m + W_m + 0.016
+    halo centre (x)  = Ref_A + d_halo_m
 
 Units: all internal values are SI (m, kg, N, kg/m^3).
 S1 accepts mm inputs via unit helpers and converts.
@@ -26,7 +34,21 @@ AXIS_Z: str = "track_upward"
 # ── Outer loop bounds ──────────────────────────────────────────────────────
 W_MIN_MM: float = 120.0
 W_MAX_MM: float = 140.0
+
+# x_front: front axle position from nose tip (mm).
+# Min: nose section must fit CO2 cartridge depth (T5.3: 45 mm) forward of Ref Plane A,
+#      so nose length = x_front - 16 >= 45 mm → x_front >= 61 mm.
+# Max: total car (nose + body + rearpod) must fit within 223 mm model block.
+#      Conservative bound uses Ref Plane B only (excludes rearpod from constraint):
+#      x_front + W + 16 <= 223  →  x_front <= 207 - W.
+#      At W=140 this gives 67 mm; absolute cap of 90 mm is never tighter.
+# Both bounds are approximations. calibrate_x_front_bounds(W_mm) returns the
+# exact W-dependent interval used by the Bayesian outer search.
+X_FRONT_MIN_MM: float = 61.0
+X_FRONT_ABS_MAX_MM: float = 90.0   # never exceeded regardless of W
+
 # d_halo upper bound = W + 16.0 mm (computed per W, not a fixed constant)
+# d_halo lower bound: 0.0 (halo at Ref Plane A; nose is degenerate but not an error)
 
 # ── Grid ───────────────────────────────────────────────────────────────────
 GRID_SPACING_MM: float = 0.3     # 0.3 mm spacing, Nyquist×10 on 3.15 mm min radius
@@ -178,9 +200,44 @@ def validate_W(W_mm: float) -> None:
             f"[{W_MIN_MM}, {W_MAX_MM}] mm."
         )
 
+def calibrate_x_front_bounds(W_mm: float) -> tuple[float, float]:
+    """
+    Return (x_front_min_mm, x_front_max_mm) for the given wheelbase.
+
+    Min: 61 mm — nose length (x_front - 16) must fit CO2 cartridge (45 mm, T5.3).
+    Max: min(90, 207 - W) mm — total car through Ref Plane B stays within 223 mm block.
+         At W=120: 87 mm.  At W=140: 67 mm.
+    """
+    x_min = X_FRONT_MIN_MM
+    x_max = min(X_FRONT_ABS_MAX_MM, 207.0 - W_mm)
+    x_max = max(x_max, x_min + 1.0)   # always at least 1 mm of search range
+    return x_min, x_max
+
+def validate_x_front(x_front_mm: float, W_mm: float) -> None:
+    """Raise ValueError if x_front is outside its W-dependent bounds."""
+    x_min, x_max = calibrate_x_front_bounds(W_mm)
+    if not (x_min <= x_front_mm <= x_max):
+        raise ValueError(
+            f"x_front={x_front_mm} mm is outside allowed range "
+            f"[{x_min}, {x_max}] mm for W={W_mm} mm."
+        )
+
+D_HALO_ABS_MAX_MM: float = 100.0   # practical cap on halo placement, confirmed by project owner
+
+def calibrate_d_halo_max_mm(W_mm: float) -> float:
+    """
+    Return the d_halo upper bound for the given wheelbase.
+
+    min(100, W+16) mm -- 100mm is a practical placement cap; W+16 guards against
+    the halo pocket (Ref Plane A + d_halo, 50mm long) extending past the rear
+    axle for very small W. For W in [120,140], W+16 is always >= 136, so this
+    always evaluates to exactly 100mm in practice.
+    """
+    return min(D_HALO_ABS_MAX_MM, W_mm + 16.0)
+
 def validate_d_halo(d_halo_mm: float, W_mm: float) -> None:
-    """Raise ValueError if d_halo is outside [0, W+16] mm."""
-    d_max = W_mm + 16.0
+    """Raise ValueError if d_halo is outside [0, min(100, W+16)] mm."""
+    d_max = calibrate_d_halo_max_mm(W_mm)
     if not (0.0 <= d_halo_mm <= d_max):
         raise ValueError(
             f"d_halo={d_halo_mm} mm is outside allowed range "

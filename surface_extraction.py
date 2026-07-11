@@ -19,7 +19,7 @@ import numpy as np
 from geometry_contract import (
     GRID_SPACING_M, MIN_RADIUS_M, MAX_EXTRACTION_RETRIES,
     TOOL_DIRECTIONS, SMALL_INACCESSIBLE_AREA_M2, LARGE_INACCESSIBLE_AREA_M2,
-    MESH_MIN_TRIANGLE_ANGLE_DEG,
+    MESH_MIN_TRIANGLE_ANGLE_DEG, MESH_MAX_ASPECT_RATIO,
 )
 from phi_grid import PhiGrid
 
@@ -289,6 +289,24 @@ def _count_boundary_edges(mesh: "trimesh.Trimesh") -> int:
     return len(grp.group_rows(mesh.edges_sorted, require_count=1))
 
 
+def _triangle_aspect_ratios(mesh: "trimesh.Trimesh") -> np.ndarray:
+    """
+    Per-face aspect ratio: longest_edge^2 * sqrt(3) / (4*area).
+
+    Equals 1.0 for an equilateral triangle (best case, since area =
+    sqrt(3)/4 * side^2 for that shape) and grows without bound for
+    slivers/needles (worst case) -- the standard normalised shape-quality
+    metric used by most CFD meshers (snappyHexMesh included).
+    """
+    tris = mesh.triangles  # (n_faces, 3, 3)
+    e0 = np.linalg.norm(tris[:, 1] - tris[:, 0], axis=1)
+    e1 = np.linalg.norm(tris[:, 2] - tris[:, 1], axis=1)
+    e2 = np.linalg.norm(tris[:, 0] - tris[:, 2], axis=1)
+    longest = np.maximum(np.maximum(e0, e1), e2)
+    areas = np.where(mesh.area_faces > 1e-15, mesh.area_faces, 1e-15)
+    return (longest ** 2) * np.sqrt(3.0) / (4.0 * areas)
+
+
 def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
     """
     Check mesh quality for snappyHexMesh compatibility.
@@ -362,6 +380,33 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
                 pass
     except Exception:
         # trimesh.triangles.angles may fail on degenerate meshes; skip angle check
+        pass
+
+    # ── Triangle aspect ratio check ──────────────────────────────────────
+    try:
+        aspect_ratios = _triangle_aspect_ratios(mesh)
+        max_ratio = float(aspect_ratios.max())
+
+        if max_ratio > MESH_MAX_ASPECT_RATIO:
+            try:
+                mesh_simplified = mesh.simplify_quadric_decimation(percent=0.9)
+                ratios2 = _triangle_aspect_ratios(mesh_simplified)
+                if float(ratios2.max()) <= MESH_MAX_ASPECT_RATIO:
+                    mesh.vertices = mesh_simplified.vertices
+                    mesh.faces = mesh_simplified.faces
+                else:
+                    raise MeshQualityFailure(
+                        f"{component}: Triangle aspect ratio "
+                        f"{float(ratios2.max()):.1f} > {MESH_MAX_ASPECT_RATIO} "
+                        f"after simplification."
+                    )
+            except MeshQualityFailure:
+                raise
+            except Exception:
+                # Simplification failed — flag but don't crash (quality warning)
+                pass
+    except Exception:
+        # Aspect ratio computation may fail on degenerate meshes; skip
         pass
 
 

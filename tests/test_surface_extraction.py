@@ -9,6 +9,7 @@ import numpy as np
 from surface_extraction import (
     SurfaceExtractionError, RadiusViolation, AccessibilityFailure,
     RuleViolation, MeshQualityFailure, extract_surface,
+    _triangle_aspect_ratios,
 )
 from phi_grid import PhiGrid
 from bounding_volumes import BoundingRegion
@@ -80,6 +81,29 @@ def test_rule_violation_has_is_major():
     assert e2.is_major == False
     _pass("test_rule_violation_has_is_major")
 
+def test_aspect_ratio_equilateral_triangle_is_one():
+    import trimesh
+    # Equilateral triangle, side length 1
+    h = np.sqrt(3.0) / 2.0
+    verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, h, 0.0]])
+    faces = np.array([[0, 1, 2]])
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    ratios = _triangle_aspect_ratios(mesh)
+    assert abs(ratios[0] - 1.0) < 1e-9, f"Equilateral triangle aspect ratio should be 1.0, got {ratios[0]}"
+    _pass("test_aspect_ratio_equilateral_triangle_is_one")
+
+
+def test_aspect_ratio_sliver_triangle_is_large():
+    import trimesh
+    # Extreme sliver: very long, very thin
+    verts = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [5.0, 0.001, 0.0]])
+    faces = np.array([[0, 1, 2]])
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    ratios = _triangle_aspect_ratios(mesh)
+    assert ratios[0] > 100.0, f"Sliver triangle should have a large aspect ratio, got {ratios[0]}"
+    _pass("test_aspect_ratio_sliver_triangle_is_large")
+
+
 if __name__ == "__main__":
     test_extract_surface_returns_mesh()
     test_extract_surface_vertices_in_world_coords()
@@ -87,4 +111,6 @@ if __name__ == "__main__":
     test_exception_hierarchy()
     test_accessibility_failure_has_is_large()
     test_rule_violation_has_is_major()
+    test_aspect_ratio_equilateral_triangle_is_one()
+    test_aspect_ratio_sliver_triangle_is_large()
     print("\nAll surface_extraction tests passed.")

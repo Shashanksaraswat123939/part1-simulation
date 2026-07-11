@@ -125,18 +125,32 @@ class PhiGrid:
         bv: BoundingRegion,
         void_masks: list[np.ndarray],
         attachment_faces: list[str],
+        solid_masks: list[np.ndarray] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Returns (hard_mask_solid, hard_mask_air).
 
-        hard_mask_solid: attachment face strips forced phi < 0.
+        hard_mask_solid: attachment face strips + solid_masks (e.g. virtual cargo,
+                          T4.2) forced phi < 0.
         hard_mask_air:   1-cell bbox border + void masks + invalid region cells forced phi > 0.
+
+        solid_masks: interior regions (not just named faces) that must remain solid.
+                      Same shape as bv.shape. If a solid_masks region overlaps a void
+                      region, void wins (see overlap resolution below) -- this should
+                      never happen in practice if callers keep solid placements clear
+                      of void placements (e.g. virtual cargo dodging the halo pocket).
         """
         nx, ny, nz = bv.shape
         strip = _attachment_strip_cells()
 
-        # --- hard_mask_solid: attachment strips ---
+        # --- hard_mask_solid: attachment strips + interior solid_masks ---
         solid = np.zeros((nx, ny, nz), dtype=bool)
+        for sm in (solid_masks or []):
+            if sm.shape != bv.shape:
+                raise ValueError(
+                    f"solid mask shape {sm.shape} != bv shape {bv.shape}"
+                )
+            solid |= sm.astype(bool)
         for face in attachment_faces:
             if face == "rear":
                 solid[max(0, nx - strip):, :, :] = True

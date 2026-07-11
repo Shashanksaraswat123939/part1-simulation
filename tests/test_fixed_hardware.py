@@ -14,16 +14,21 @@ from geometry_contract import R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m
 def _pass(n): print(f"PASS {n}")
 def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
 
-def test_front_cylinder_x_center_is_zero():
-    cyl = ForbiddenCylinder(0.0, 0.0, 0.015, R_WHEEL_M+WHEEL_CLEARANCE_M, 0.010)
-    assert cyl.x_center_m == 0.0
-    _pass("test_front_cylinder_x_center_is_zero")
+def test_front_cylinder_x_center_at_x_front():
+    """Coordinate system: x=0 at nose tip, front axle at x_front_m."""
+    x_front_m = mm_to_m(64.0)
+    cyl = ForbiddenCylinder(x_front_m, 0.0, 0.015, R_WHEEL_M+WHEEL_CLEARANCE_M, 0.010)
+    assert abs(cyl.x_center_m - x_front_m) < 1e-12
+    _pass("test_front_cylinder_x_center_at_x_front")
 
-def test_rear_cylinder_x_center_equals_W():
+def test_rear_cylinder_x_center_equals_x_front_plus_W():
+    """Rear axle at x_front_m + W_m in nose-tip coordinates."""
+    x_front_m = mm_to_m(64.0)
     W_m = mm_to_m(130.0)
-    cyl = ForbiddenCylinder(W_m, 0.0, 0.015, R_WHEEL_M+WHEEL_CLEARANCE_M, 0.010)
-    assert abs(cyl.x_center_m - W_m) < 1e-12
-    _pass("test_rear_cylinder_x_center_equals_W")
+    rear_axle_m = x_front_m + W_m
+    cyl = ForbiddenCylinder(rear_axle_m, 0.0, 0.015, R_WHEEL_M+WHEEL_CLEARANCE_M, 0.010)
+    assert abs(cyl.x_center_m - rear_axle_m) < 1e-12
+    _pass("test_rear_cylinder_x_center_equals_x_front_plus_W")
 
 def test_cylinder_contains_point_inside():
     cyl = ForbiddenCylinder(0.0, 0.0, 0.015, 0.020, 0.010)
@@ -72,64 +77,65 @@ def test_box_void_mask_shape():
     _pass("test_box_void_mask_shape")
 
 def test_halo_validation_behind_front_axle():
-    # Valid: halo x_front > 0 and > canister_x
-    halo = HaloGeometry(x_front_m=0.010, x_rear_m=0.050)
-    _validate_halo_position(halo, canister_x_m=0.005, W_m=0.130)
+    # Coordinate system: x=0 at nose tip. front_axle_m=0.064, rear_axle_m=0.194.
+    # Valid: halo x_front > front_axle_m and > canister_x
+    halo = HaloGeometry(x_front_m=0.070, x_rear_m=0.100)
+    _validate_halo_position(halo, canister_x_m=0.020, front_axle_m=0.064, rear_axle_m=0.194)
     _pass("test_halo_validation_behind_front_axle")
 
-def test_halo_validation_fails_if_at_front_axle():
-    halo = HaloGeometry(x_front_m=0.0, x_rear_m=0.050)
-    try:
-        _validate_halo_position(halo, canister_x_m=0.005, W_m=0.130)
-        _fail("test_halo_validation_fails_if_at_front_axle", "should have raised")
-    except ValueError:
-        _pass("test_halo_validation_fails_if_at_front_axle")
+def test_halo_validation_allows_at_or_before_front_axle():
+    """The real regs have no rule tying halo x-position to the front axle
+    (the earlier H2 assumption was removed -- see fixed_hardware.py). A halo
+    starting at or even before the front axle (small d_halo) must be allowed."""
+    halo = HaloGeometry(x_front_m=0.064, x_rear_m=0.100)
+    _validate_halo_position(halo, canister_x_m=0.020, front_axle_m=0.064, rear_axle_m=0.194)
+    halo_before = HaloGeometry(x_front_m=0.050, x_rear_m=0.086)
+    _validate_halo_position(halo_before, canister_x_m=0.020, front_axle_m=0.064, rear_axle_m=0.194)
+    _pass("test_halo_validation_allows_at_or_before_front_axle")
 
-def test_halo_validation_fails_if_before_canister():
-    halo = HaloGeometry(x_front_m=0.003, x_rear_m=0.050)
-    try:
-        _validate_halo_position(halo, canister_x_m=0.010, W_m=0.130)
-        _fail("test_halo_validation_fails_if_before_canister", "should have raised")
-    except ValueError:
-        _pass("test_halo_validation_fails_if_before_canister")
+def test_halo_validation_allows_before_canister():
+    """No real rule ties halo position to the canister either (H3a removed)."""
+    halo = HaloGeometry(x_front_m=0.068, x_rear_m=0.100)
+    _validate_halo_position(halo, canister_x_m=0.070, front_axle_m=0.064, rear_axle_m=0.194)
+    _pass("test_halo_validation_allows_before_canister")
 
 def test_halo_validation_fails_if_past_rear_axle():
-    halo = HaloGeometry(x_front_m=0.010, x_rear_m=0.135)
+    halo = HaloGeometry(x_front_m=0.070, x_rear_m=0.195)
     try:
-        _validate_halo_position(halo, canister_x_m=0.005, W_m=0.130)
+        _validate_halo_position(halo, canister_x_m=0.020, front_axle_m=0.064, rear_axle_m=0.194)
         _fail("test_halo_validation_fails_if_past_rear_axle", "should have raised")
     except ValueError:
         _pass("test_halo_validation_fails_if_past_rear_axle")
 
 def test_com_sanity_gate_catches_mm_as_m():
     try:
-        _assert_com_in_range("test", (0.050, 0.0, 25.0), W_m=0.130)  # z=25 m is mm error
+        _assert_com_in_range("test", (0.050, 0.0, 25.0), rear_axle_m=0.194)  # z=25 m is mm error
         _fail("test_com_sanity_gate_catches_mm_as_m", "should have raised")
     except ValueError:
         _pass("test_com_sanity_gate_catches_mm_as_m")
 
 def test_com_sanity_gate_valid():
-    _assert_com_in_range("test", (0.050, 0.0, 0.025), W_m=0.130)
+    _assert_com_in_range("test", (0.050, 0.0, 0.025), rear_axle_m=0.194)
     _pass("test_com_sanity_gate_valid")
 
 def test_com_sanity_gate_outside_car_length():
     try:
-        _assert_com_in_range("test", (0.200, 0.0, 0.025), W_m=0.130)
+        _assert_com_in_range("test", (0.300, 0.0, 0.025), rear_axle_m=0.194)
         _fail("test_com_sanity_gate_outside_car_length", "should have raised")
     except ValueError:
         _pass("test_com_sanity_gate_outside_car_length")
 
 if __name__ == "__main__":
-    test_front_cylinder_x_center_is_zero()
-    test_rear_cylinder_x_center_equals_W()
+    test_front_cylinder_x_center_at_x_front()
+    test_rear_cylinder_x_center_equals_x_front_plus_W()
     test_cylinder_contains_point_inside()
     test_cylinder_contains_point_outside()
     test_cylinder_void_mask_shape()
     test_cylinder_void_mask_centre_is_true()
     test_box_void_mask_shape()
     test_halo_validation_behind_front_axle()
-    test_halo_validation_fails_if_at_front_axle()
-    test_halo_validation_fails_if_before_canister()
+    test_halo_validation_allows_at_or_before_front_axle()
+    test_halo_validation_allows_before_canister()
     test_halo_validation_fails_if_past_rear_axle()
     test_com_sanity_gate_catches_mm_as_m()
     test_com_sanity_gate_valid()

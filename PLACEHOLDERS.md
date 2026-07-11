@@ -8,6 +8,21 @@ original UNRESOLVED ID from the source code where applicable.
 
 ## 1. U6 — RuleEnvelope dimensions (bounding_volumes.py)
 
+**Partially resolved (2026-07-11):** `y_sidepod_outer_m` should be **0.0325 m
+(32.5 mm)** — user's confirmed design target for max half-width everywhere on
+the car (the legal minimum per T3.4 is a 65mm total width / 32.5mm half-width;
+the team is choosing to build to that legal minimum rather than the 42.5mm
+legal maximum, for reduced frontal area/drag). This is a design choice, not
+itself a hard regulation ceiling — T3.4's actual legal range is 32.5-42.5mm
+half-width.
+
+**Still unresolved:** `y_body_half_m`, `y_sidepod_inner_m`, `z_floor_m`,
+`z_nose_top_m`, `z_sidepod_top_m`, `z_rearpod_top_m`, `z_body_top_m`,
+`rearpod_max_length_m` remain placeholders. Note `y_sidepod_inner_m` must be
+set smaller than `y_sidepod_outer_m=0.0325` with enough margin for a
+manufacturable sidepod width (current stub value of 0.030 leaves only 2.5mm,
+too thin to be meaningful) — update both together once resolved.
+
 **What:** The `RuleEnvelope` dataclass contains absolute car envelope dimensions
 (y_body_half_m, y_sidepod_inner_m, y_sidepod_outer_m, z_floor_m, z_nose_top_m,
 z_sidepod_top_m, z_rearpod_top_m, z_body_top_m, rearpod_max_length_m).
@@ -113,113 +128,90 @@ is available.
 
 ---
 
-## 6. Minimum radius check (surface_extraction.py, Stage 3)
+## 6. RESOLVED: Minimum radius check (surface_extraction.py, Stage 3)
 
-**What:** `_check_min_radius()` — the local radius estimation that checks
-whether the machined surface respects `MIN_RADIUS_MM = 3.15 mm`.
-
-**Placeholder:** Returns empty list `[]` (no violators). The function is a stub.
-
-**Why:** Proper local radius estimation requires curvature analysis from
-dihedral angles and vertex neighbourhood topology. The simple neighbour-distance
-heuristic originally attempted was too crude and produced false positives on
-small test grids.
-
-**Impact:** No geometry will be rejected for minimum radius violations. Parts
-with features smaller than 3.15 mm radius will pass through undetected.
-
-**To resolve:** Implement a proper curvature-based local radius estimator
-(e.g. using mesh vertex normals and dihedral angle analysis).
+`_estimate_local_radii()` uses `trimesh.curvature.discrete_mean_curvature_measure`
+for real curvature-based local radius estimation, with a documented
+conservative fallback (treat as infinite radius, i.e. pass) if curvature
+computation fails on a degenerate mesh. `extract_surface()`'s retry loop
+calls `_smooth_phi_neighbourhood()` to locally smooth violating regions and
+re-extracts, raising `RadiusViolation` only after `MAX_EXTRACTION_RETRIES`
+attempts. This was already implemented before 2026-07-11 (see git history:
+"fix: replace broken dihedral-radius fallback with conservative pass-all");
+this file's earlier description of it as a stub was stale documentation, not
+the actual code state.
 
 ---
 
-## 7. Tool accessibility check (surface_extraction.py, Stage 4)
+## 7. RESOLVED: Tool accessibility check (surface_extraction.py, Stage 4)
 
-**What:** `_check_accessibility()` — determines whether a CNC tool can physically
-reach all faces of the extracted mesh from the allowed `TOOL_DIRECTIONS`.
-
-**Placeholder:** Simple normal-based heuristic (dot product > 0.1 with tool
-direction) instead of full ray-casting accessibility analysis.
-
-**Why:** Full ray-casting from each face centre along each tool direction,
-checking whether the ray re-enters the mesh, requires `trimesh.intersections`
-or `trimesh.ray` operations that are computationally expensive and need careful
-implementation to handle edge cases (grazing rays, thin features).
-
-**Impact:** The check may produce false positives (faces that appear accessible
-by normal direction but are blocked by intervening geometry) or false negatives.
-
-**To resolve:** Implement proper ray-casting accessibility check using
-`trimesh.ray.ray_pyembree` or equivalent.
+`_find_inaccessible_faces()` performs real ray-casting via `mesh.ray.intersects_id()`:
+for each allowed tool direction, casts a ray from each candidate face (normal
+pointing toward the tool) back toward the mesh, and only counts a face as
+accessible if its own ray isn't blocked by other geometry first. Same stale-
+documentation situation as item 6 above — already implemented, not a stub.
 
 ---
 
 ## 8. Mesh quality gate — triangle angles and aspect ratios (surface_extraction.py, Stage 6)
 
-**What:** `_check_mesh_quality()` — full triangle quality checks.
-
-**Placeholder:** Only checks watertight and is_volume. Missing: minimum interior
-angle > 10°, maximum aspect ratio < 10, and simplification fallback.
-
-**Why:** `trimesh` does not provide a direct triangle angle/aspect ratio
-function in its stable API. Computing these requires manual triangle edge
-length and angle calculations.
-
-**Impact:** Degenerate triangles (slivers, needles) won't be caught. snappyHexMesh
-may fail on such meshes.
-
-**To resolve:** Implement manual triangle angle and aspect ratio computation,
-plus `mesh.simplify_quadric_decimation()` fallback for failing meshes.
+**Partially stale, now fully resolved (2026-07-11):** the triangle minimum-angle
+check (`MESH_MIN_TRIANGLE_ANGLE_DEG`, with `simplify_quadric_decimation()`
+fallback) was already implemented. The aspect ratio check was genuinely
+missing — `MESH_MAX_ASPECT_RATIO` wasn't even imported into the file. Added
+`_triangle_aspect_ratios()` (longest_edge^2 * sqrt(3) / (4*area), the standard
+CFD-mesher shape metric — 1.0 for equilateral, unbounded for slivers/needles)
+with the same simplify-then-recheck fallback pattern as the angle check.
+Verified against a hand-built equilateral triangle (ratio == 1.0 exactly) and
+a hand-built sliver (ratio > 100) in `tests/test_surface_extraction.py`.
 
 ---
 
-## 9. Adjoint sensitivity mesh-to-grid mapping (phi_updater.py)
+## 9. RESOLVED: Adjoint sensitivity mesh-to-grid mapping (phi_updater.py)
 
-**What:** `apply_adjoint_sensitivity_symmetric()` — mapping surface sensitivity
-from CFD mesh vertices to phi grid cells.
+`apply_adjoint_sensitivity_symmetric()` + `_splat_vertex_sensitivity_to_grid()`
+already implement real nearest-cell splatting (with averaging when multiple
+mesh vertices round to the same cell), symmetry mirroring for symmetric
+components (nose/rearpod/main_body get contributions from both the right-half
+mesh directly and its y-mirrored image; sidepod uses the right-half directly
+since its grid only covers y>=0), and velocity extension via the (also real)
+Godunov `extend_velocity()` before the HJ update. This was stale documentation
+from before 2026-07-11's fixes, not the actual code state — same pattern as
+items 6/7 above. Added direct test coverage in `tests/test_phi_updater.py`
+(previously zero tests exercised these functions despite them being fully
+implemented).
 
-**Placeholder:** If sensitivity array shape matches phi grid shape, use it
-directly. Otherwise, skip the component (no-op).
+**Found and fixed while adding that coverage:** `bayesian_outer_search.py`'s
+evolution loop (`_level2_evaluate`, `n_iters > 0` branch) called
+`hj_update(pg.grid, ...)` and `reinitialise_sdf(pg.grid)` — passing the raw
+array. Both functions actually take the `PhiGrid` object (mutate in place,
+return `None`). This crashed with `AttributeError: 'numpy.ndarray' object has
+no attribute 'grid'` the moment anyone set `n_iters > 0` — untested until now
+because every earlier evaluation in this session used `n_iters=0`. Fixed to
+pass `pg` directly; regression test added
+(`test_level2_evolution_loop_runs_without_crashing`).
 
-**Why:** Proper mesh-to-grid interpolation (nearest-cell or trilinear splatting)
-requires knowledge of the CFD mesh structure and the mapping between mesh
-vertices and grid cells. This depends on Part 2/Part 3's CFD mesh format.
-
-**Impact:** Adjoint-driven shape optimization will not work properly. The phi
-updater won't respond to CFD sensitivity feedback.
-
-**To resolve:** Implement nearest-cell or trilinear splatting from mesh vertices
-to grid cells once the CFD mesh interface is finalized.
+**Still a real scope boundary (not a Part 1 bug):** mass/COM/manufacturing
+gradients are combined as zero placeholders in `combine_gradients()` — the
+locked race objective's analytical gradients for these are explicitly Part
+2/3's responsibility, not something Part 1 computes.
 
 ---
 
-## 10. Fixed hardware input values (test files / integration)
+## 10. RESOLVED (2026-07-11): Fixed hardware input values wired end-to-end
 
-**What:** The `place_fixed_hardware()` function requires several physical
-hardware parameters:
-- `wheel_axle_mass_kg` — total mass of all 4 wheels + axles
-- `wheel_axle_com_mm` — COM of wheels+axles assembly
-- `wheel_x_half_width_mm` — half-width of wheel assembly in x
-- `wheel_axle_z_mm` — axle height above track
-- `rear_wing_mass_kg` — rear wing mass
-- `canister_box_half_size_mm` — half-size of canister void box
+`fixed_hardware.compute_default_fixed_hardware_inputs()` now supplies all of
+these (canister position/size, rear wing mass+COM, wheel/axle mass+COM+
+geometry, halo cross-section) as documented design defaults within legal T5/
+T9 bounds, and `bayesian_outer_search._level2_evaluate()` calls
+`place_fixed_hardware()` + Part 2's real `ingest_mass_com()` with them every
+evaluation (see item 14/15-style entries below, and the "Design defaults"
+section at the bottom of `fixed_hardware.py` for exact values and rationale).
 
-**Placeholder values used in test files:**
-```python
-# test_bounding_volumes.py
-front = ForbiddenCylinder(0.0, 0.0, 0.015, r, 0.008)  # z=15mm, half-width=8mm — PLACEHOLDER
-rear  = ForbiddenCylinder(W_m, 0.0, 0.015, r, 0.008)   # same — PLACEHOLDER
-```
-
-**Why:** Physical hardware specifications (wheel mass, axle dimensions, wing mass)
-have not been provided. The placeholders use physically plausible values based
-on typical STEM Racing car components.
-
-**Impact:** Mass/COM calculations will use placeholder values, producing
-incorrect race time predictions in Part 2.
-
-**To resolve:** Measure or obtain from spec sheets: wheel+axle mass, COM,
-half-width, axle height, rear wing mass and COM, canister box dimensions.
+**Still genuinely open:** these are starting points within the legal range,
+not measured/confirmed final values — same caveat as U2/U5 always had.
+Override with real measurements once available: wheel+axle mass, COM, canister
+exact depth/diameter choice, rear wing mass and mounting position.
 
 ---
 
@@ -244,19 +236,106 @@ raise `MeshQualityFailure` if still broken after repair.
 
 ---
 
-## 12. Velocity extension algorithm (phi_updater.py)
+## 12. RESOLVED: Velocity extension algorithm (phi_updater.py)
 
-**What:** `extend_velocity()` — propagates surface velocity into the volume
-using the PDE: dF/dtau + sign(phi) * grad(phi) . grad(F) = 0.
+`extend_velocity()` already implements the proper Godunov-style upwind
+extension: computes the unit surface normal from `_godunov_gradient()`, picks
+the upwind finite difference per axis based on the sign of
+`sign(phi) * normal_component` (characteristics propagate away from the
+zero level set), and iterates the PDE `dF/dtau + sign(phi) * n . grad(F) = 0`
+following Osher & Fedkiw (2003). This was stale documentation, not the actual
+code state — same pattern as items 6/7/9 above.
 
-**Placeholder:** Simplified first-order upwind scheme that divides the gradient
-by 3 (rough averaging). Not the proper Godunov-based extension.
+---
 
-**Why:** The full velocity extension requires careful upwind scheme selection
-based on the sign of phi and the direction of grad(phi). The simplified version
-is functional but not numerically accurate for production optimization.
+## 13. T7.9 wedge angle labels vs linear dimensions (wheel_visibility_zones.py)
 
-**Impact:** Shape optimization convergence may be slow or unstable.
+**What:** T7.9.2/T7.9.3 (the sidepod's wheel-visibility keep-clear wedges) are
+defined in the regs diagram (page 32) by two linear dimensions plus an angle
+label each: front wedge 15.0mm x 30.0mm at a labelled ~60°; rear wedge 5.0mm x
+30.0mm at a labelled ~45°.
 
-**To resolve:** Implement the full upwind velocity extension following
-Osher & Fedkiw (2003) or similar level-set methods reference.
+**Placeholder/assumption:** The two linear dimensions do not reconcile exactly
+with the labelled angle (15/30 implies ~63.4°, not 60°; 5/30 implies ~80.5°,
+not 45°) — consistent with rounding in a hand-annotated diagram.
+`build_t79_forbidden_mask()` treats the **linear millimetre dimensions as
+authoritative** (what a caliper/feeler-gauge scrutineering check actually
+measures) and ignores the angle labels.
+
+**Impact:** If STEM Racing's actual scrutineering gauge is manufactured to the
+angle instead (e.g. an exact 45°/45° isoceles wedge for the rear), the modelled
+forbidden zone would differ slightly from the physical one — current model is
+larger/more conservative on the front wedge (real gauge closer to 60°/26mm),
+and the rear wedge shape especially should be double-checked.
+
+**To resolve:** Confirm with STEM Racing/Yas in Schools which reading is
+authoritative, or measure the physical scrutineering gauge if available.
+
+---
+
+## 14. RESOLVED (2026-07-11): d_halo was not wired into any geometry
+
+**What was wrong:** `d_halo` was validated (`validate_d_halo`) and stored on
+`BoundingVolumes.d_halo_mm`, but nothing used it to place anything. The halo's
+position was set independently via a hand-built `HaloGeometry(x_front_m=...,
+x_rear_m=...)`, completely disconnected from `d_halo`. `_level2_evaluate()`
+never called `place_fixed_hardware()` at all. Net effect: every value of
+`d_halo` the Bayesian search proposed would have produced an *identical*
+mass/COM/race-time — the optimizer would see zero signal on that axis.
+
+**Fix:** New module `halo_pocket.py` computes the halo's mounting-pocket
+bounding box (50mm x 25mm x 3.175mm deep, per regs Appendix ix) positioned at
+`Ref Plane A + d_halo`, floor pinned at `HALO_MIN_Z_M=24mm` (T4.4.4, fixed).
+`compute_bounding_volumes()` now forces this box to `phi > 0` (air) within
+`main_body`'s voxel mask, alongside the existing T7.9 wheel-visibility zones.
+Verified end-to-end: two evaluations differing only in `d_halo` now produce
+different `main_body` masks, different mass, and different race-time proxy
+(`tests/test_halo_pocket.py::test_d_halo_changes_bounding_volumes_end_to_end`).
+
+**d_halo bound also corrected:** was a flat `W+16` (136-156mm depending on W);
+now `min(100, W+16)` per project owner confirmation — always exactly 100mm
+for `W` in `[120,140]`. `calibrate_d_halo_max_mm(W_mm)` in `geometry_contract.py`.
+
+**Still approximate:** the pocket is modelled as its full bounding rectangle,
+not the tapered/rounded outline in the diagram (conservative — excludes a bit
+more volume than strictly required, never less). See item 13 for the same
+caveat pattern applied to T7.9.
+
+---
+
+## 15. RESOLVED (2026-07-11): virtual cargo (T4.2) was not implemented at all
+
+**What was wrong:** zero references to "cargo" anywhere in the codebase.
+Nothing generated, positioned, or enforced the T4.2 mandatory minimum-solid
+region.
+
+**Fix:** New module `virtual_cargo.py`. The cargo is a tapered wedge (60mm
+long, 10mm tall constant, tapering 55mm→10mm wide — read from the T4.2
+diagram) that must exist somewhere between the axle centrelines. Position is
+NOT dictated by the regs beyond "between axles" + "not overlapping the halo
+pocket" (T4.3's example dimensions are one team's illustrative choice, not a
+rule) — so this is a genuine design decision, not a lookup.
+
+**Architecture decision (confirmed with project owner):** cargo position is
+NOT a Bayesian search dimension. Unlike W/x_front/d_halo it never touches the
+exterior surface or aerodynamics — it's a purely interior constraint, so
+evaluating a candidate position is a cheap direct mass/COM calculation, no
+CFD needed. `find_cargo_placement()` runs once per Level 2 evaluation: scans
+candidate x-positions in the axle corridor (preferring centre), skips any
+that overlap that evaluation's halo pocket box, and forces the winning
+placement to `phi < 0` (solid) via a new `solid_masks` parameter added to
+`PhiGrid.build_hard_masks()` (mirrors the existing `void_masks` parameter,
+just forcing solid instead of air).
+
+**Real finding from implementation:** for some (W, x_front, d_halo) combos,
+the halo pocket can sit in the middle of the axle corridor and split it into
+two segments, neither large enough alone to hold the 60mm cargo, even though
+the combined free space would be enough. This is now correctly caught and
+returns `lifecycle="geometry_rejected"` rather than silently placing the
+cargo somewhere illegal. Confirmed via
+`tests/test_virtual_cargo.py::test_placement_raises_when_impossible`.
+
+**Still approximate:** modelled as the exact tapered wedge (not a bounding
+box, unlike items 13/14 above) — accuracy matters more here because
+over-forcing solid volume beyond the regulatory minimum directly adds
+unwanted mass, unlike the forbidden-zone cases where over-exclusion is safe.

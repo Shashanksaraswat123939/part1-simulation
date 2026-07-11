@@ -5,3 +5,5 @@ trimesh>=3.22
 shapely>=2.0
 mapbox-earcut>=1.0
 rtree>=1.0
+# Level 1 Bayesian outer search
+botorch>=0.10.0   # pulls in torch>=2.0 and gpytorch>=1.11 automatically

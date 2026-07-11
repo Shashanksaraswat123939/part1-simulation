@@ -18,7 +18,7 @@ from mass_com_ingest import FixedHardwareSpec   # Part 2 type
 from geometry_contract import (
     CO2_MASS_KG, GRID_SPACING_M, WHEEL_CLEARANCE_M,
     HARDWARE_CLEARANCE_M, HALO_MIN_Z_M, mm_to_m,
-    R_WHEEL_M, validate_W,
+    R_WHEEL_M, validate_W, validate_x_front,
     COM_Z_LOWER_BOUND_M, COM_Z_UPPER_BOUND_M,
 )
 
@@ -102,50 +102,39 @@ class FixedHardwareResult:
 def _validate_halo_position(
     halo: HaloGeometry,
     canister_x_m: float,
-    W_m: float,
+    front_axle_m: float,
+    rear_axle_m: float,
 ) -> None:
     """
-    Enforce all three confirmed halo rules:
+    Enforce halo position rules.
 
-    Rule H1: Halo bottom must be at z >= 24 mm = 0.024 m above track.
-             We check the bottom of the cross-section (min z vertex).
-             ! UNRESOLVED U1: Until cross_section_yz_m is provided, we cannot
-             check the exact bottom z. We can only check that x_front is valid.
+    Coordinate system: x=0 at nose tip. front_axle_m = x_front_m, rear_axle_m = x_front_m + W_m.
 
-    Rule H2: Halo front edge must be strictly aft of front axle.
-             Front axle is at x = 0.0 m. "Aft" means larger x (front-to-rear convention).
-             Therefore: halo.x_front_m > 0.0 m.
+    Rule H1 (T4.4.4, real regulation): halo bottom must be at z >= 24mm = 0.024m
+             above track. Checked against the bottom of the cross-section (min z vertex).
 
-    Rule H3: Halo must sit between canister pocket and front axle in x.
-             canister is forward (smaller x), halo is between canister and front axle.
-             Therefore: canister_x_m < halo.x_front_m  AND  halo.x_front_m > 0.0 m
-             (Rule H2 already enforces the second condition.)
-             Also: halo must not extend past the rear axle: halo.x_rear_m < W_m
+    Sanity bound (NOT a numbered regulation -- the actual regs text has no rule
+             constraining the halo's x-position relative to the front axle or
+             canister; an earlier assumption to that effect was removed here
+             since it wrongly rejected legal d_halo values below 16mm). We keep
+             only a basic containment check: the halo must not extend past the
+             rear axle, since it is a main_body-mounted part and going past the
+             rear axle would place it in rearpod territory.
+
+    canister_x_m is accepted for signature stability but no longer checked
+    against halo position (see above).
     """
-    # Rule H2: halo front must be behind front axle (x > 0)
-    if halo.x_front_m <= 0.0:
-        raise ValueError(
-            f"Halo front edge at x={halo.x_front_m:.4f} m must be strictly "
-            f"aft of front axle (x=0.0 m). In front-to-rear convention, "
-            f"'behind front axle' means x > 0. Got x={halo.x_front_m:.4f} m."
-        )
+    del canister_x_m   # no longer checked -- see docstring
 
-    # Rule H3a: halo must be aft of canister pocket
-    if halo.x_front_m <= canister_x_m:
-        raise ValueError(
-            f"Halo front edge (x={halo.x_front_m:.4f} m) must be aft of "
-            f"canister pocket (x={canister_x_m:.4f} m). "
-            f"'Between canister and front axle' means canister_x < halo_x_front."
-        )
-
-    # Rule H3b: halo must not extend past rear axle
-    if halo.x_rear_m >= W_m:
+    # Sanity bound: halo must not extend past rear axle (main_body containment,
+    # not a specific numbered regulation)
+    if halo.x_rear_m >= rear_axle_m:
         raise ValueError(
             f"Halo rear edge (x={halo.x_rear_m:.4f} m) extends past or to "
-            f"rear axle (x={W_m:.4f} m). Halo must fit within the car body."
+            f"rear axle (x={rear_axle_m:.4f} m). Halo must fit within the car body."
         )
 
-    # Rule H1: check z bottom if cross-section is known
+    # Rule H1 (T4.4.4): check z bottom if cross-section is known
     if halo.cross_section_yz_m is not None:
         z_bottom = min(z for _, z in halo.cross_section_yz_m)
         if z_bottom < HALO_MIN_Z_M - 1e-6:
@@ -160,7 +149,7 @@ def _validate_halo_position(
 def _assert_com_in_range(
     label: str,
     com_m: tuple[float, float, float],
-    W_m: float,
+    rear_axle_m: float,
 ) -> None:
     """
     Validate that a COM coordinate is physically plausible.
@@ -168,14 +157,18 @@ def _assert_com_in_range(
     This catches mm-vs-m units bugs before they reach Part 2's polynomial,
     which would produce race time values of 10^15 seconds (Part 2 audit finding 3.1).
 
+    Coordinate system: x=0 at nose tip. rear_axle_m = x_front_m + W_m.
+    Bound includes a 50mm margin aft of the rear axle for rearpod overhang (T9.4.2 max 40mm).
+
     Rules:
-      x in [-0.01, W_m + 0.01]   within car length
-      y in [-0.05, 0.05]         within car width
+      x in [-0.01, rear_axle_m + 0.05]   within car length
+      y in [-0.05, 0.05]                 within car width
       z in [COM_Z_LOWER_BOUND_M, COM_Z_UPPER_BOUND_M]  physical COM height
     """
     x, y, z = com_m
-    if not (-0.01 <= x <= W_m + 0.01):
-        raise ValueError(f"{label}: x={x:.6f} outside [-0.01, {W_m + 0.01:.6f}]")
+    x_max = rear_axle_m + 0.05
+    if not (-0.01 <= x <= x_max):
+        raise ValueError(f"{label}: x={x:.6f} outside [-0.01, {x_max:.6f}]")
     if not (-0.05 <= y <= 0.05):
         raise ValueError(f"{label}: y={y:.6f} outside [-0.05, 0.05]")
     if not (COM_Z_LOWER_BOUND_M <= z <= COM_Z_UPPER_BOUND_M):
@@ -284,6 +277,7 @@ def _build_box_void_mask(
 
 def place_fixed_hardware(
     W_mm: float,
+    x_front_mm: float,
     halo_geometry: HaloGeometry,
     canister_com_mm: Optional[tuple[float, float, float]],   # ! U2: None until confirmed
     canister_box_half_size_mm: float,                         # half-size of canister void box
@@ -301,6 +295,7 @@ def place_fixed_hardware(
 
     Args:
         W_mm: wheelbase in mm
+        x_front_mm: front axle position from nose tip in mm (x=0 = nose tip)
         halo_geometry: halo dimensions (x_front_m, x_rear_m, cross_section_yz_m)
         canister_com_mm: (x, y, z) of CO2 canister centre in mm, or None (! U2)
         canister_box_half_size_mm: half-size of cubic void box around canister in mm
@@ -318,22 +313,26 @@ def place_fixed_hardware(
     """
 
     validate_W(W_mm)
+    validate_x_front(x_front_mm, W_mm)
     W_m = mm_to_m(W_mm)
+    x_front_m = mm_to_m(x_front_mm)
+    rear_axle_m = x_front_m + W_m
 
     # ?? Front and rear forbidden cylinders ????????????????????????????????
+    # Coordinate system: x=0 at nose tip. Front axle at x_front_m, rear at x_front_m+W_m.
     axle_z_m = mm_to_m(wheel_axle_z_mm)
     axle_x_half_m = mm_to_m(wheel_x_half_width_mm)
     cylinder_radius_m = R_WHEEL_M + WHEEL_CLEARANCE_M
 
     front_cylinder = ForbiddenCylinder(
-        x_center_m     = 0.0,
+        x_center_m     = x_front_m,
         y_center_m     = 0.0,
         z_center_m     = axle_z_m,
         radius_m       = cylinder_radius_m,
         x_half_width_m = axle_x_half_m,
     )
     rear_cylinder = ForbiddenCylinder(
-        x_center_m     = W_m,
+        x_center_m     = rear_axle_m,
         y_center_m     = 0.0,
         z_center_m     = axle_z_m,
         radius_m       = cylinder_radius_m,
@@ -350,14 +349,14 @@ def place_fixed_hardware(
             "The canister is at the front of the car (small x value)."
         )
     canister_com_m = tuple(mm_to_m(v) for v in canister_com_mm)
-    _assert_com_in_range("CO2 canister", canister_com_m, W_m)
+    _assert_com_in_range("CO2 canister", canister_com_m, rear_axle_m)
 
     # ?? Halo position validation ??????????????????????????????????????????
-    _validate_halo_position(halo_geometry, canister_com_m[0], W_m)
+    _validate_halo_position(halo_geometry, canister_com_m[0], x_front_m, rear_axle_m)
 
     # ?? Wheel+axle COM ????????????????????????????????????????????????????
     wheel_axle_com_m = tuple(mm_to_m(v) for v in wheel_axle_com_mm)
-    _assert_com_in_range("Wheels+axles", wheel_axle_com_m, W_m)
+    _assert_com_in_range("Wheels+axles", wheel_axle_com_m, rear_axle_m)
 
     # ?? Rear wing COM ?????????????????????????????????????????????????????
     # ! UNRESOLVED U5: Rear wing fixed position coordinate not confirmed.
@@ -367,7 +366,7 @@ def place_fixed_hardware(
             "Provide rear_wing_com_mm=(x_mm, y_mm, z_mm)."
         )
     rear_wing_com_m = tuple(mm_to_m(v) for v in rear_wing_com_mm)
-    _assert_com_in_range("Rear wing", rear_wing_com_m, W_m)
+    _assert_com_in_range("Rear wing", rear_wing_com_m, rear_axle_m)
 
     # ?? Build void masks ??????????????????????????????????????????????????
     front_axle_mask = _build_cylinder_void_mask(
@@ -428,3 +427,108 @@ def place_fixed_hardware(
         combined_void_mask   = combined,
         fixed_hardware_spec  = spec,
     )
+
+
+# ============================================================================
+# Design defaults for U1 (halo cross-section), U2 (canister position), and
+# U5 (rear wing COM) -- see PLACEHOLDERS.md item 16 for full rationale.
+#
+# None of these are "resolved" in the sense of a confirmed measured value.
+# The actual regs constrain each of these to a legal RANGE, not an exact
+# number (T5.1/T5.2/T5.3 for the canister, T9.4/T9.5 for the rear wing).
+# Where no exact value is given, these pick a reasonable point within the
+# legal range so the pipeline can run end-to-end. Override with measured/
+# confirmed values once available -- these are starting points, not final
+# design decisions.
+# ============================================================================
+
+# Cartridge chamber / CO2 canister (T5.1-T5.6)
+CANISTER_DIAMETER_MM: float = 18.25    # T5.1: 18.0-18.5mm, midpoint
+CANISTER_DEPTH_MM: float = 50.0        # T5.3: 45.0-58.0mm
+CANISTER_Z_MM: float = 35.0            # T5.2: 30.0-40.0mm, midpoint (rear-centre height)
+CANISTER_SAFETY_ZONE_MM: float = 3.0   # T5.5: min 3.0mm wall around chamber
+
+# Rear wing (T9.4, T9.5) -- mass and COM height are not given by the regs at all;
+# these are placeholders pending a real measured rear wing.
+REAR_WING_MASS_KG: float = 0.005       # design placeholder, ~5g
+REAR_WING_OVERHANG_MM: float = 20.0    # T9.4.2: 0-40mm aft of Ref Plane B, midpoint
+REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
+
+# Wheels + axles combined assembly -- mass is not given by the regs (a supplier
+# part); this is a design placeholder pending real measurement.
+WHEEL_AXLE_MASS_KG: float = 0.015      # design placeholder, ~15g for all 4 wheels+axles
+
+# Halo cross-section (U1): the real halo is a downloadable fixed CAD part
+# (T4.4.1) with a curved bar profile, not a constant extruded cross-section.
+# Modelling it as ONE extruded polygon (matching the existing HaloGeometry
+# design) is already a simplification. This uses a conservative rectangular
+# bounding profile from the visible Appendix ix dimensions (25mm pocket
+# width, floor at 24mm) rather than guessing the exact arch shape. Excluding
+# more than the true arch needs is safe here (same principle as the T7.9
+# zones): it only costs the optimizer a little shape freedom near the halo,
+# it cannot produce an illegal design.
+HALO_CROSS_SECTION_HALF_WIDTH_MM: float = 12.5   # matches halo_pocket.py's 25mm width
+HALO_CROSS_SECTION_TOP_MM: float = 45.0          # conservative; real arch height TBD
+
+
+def default_halo_cross_section_yz_m() -> list[tuple[float, float]]:
+    """Conservative rectangular halo cross-section, see U1 note above."""
+    hw = mm_to_m(HALO_CROSS_SECTION_HALF_WIDTH_MM)
+    z0 = HALO_MIN_Z_M
+    z1 = mm_to_m(HALO_CROSS_SECTION_TOP_MM)
+    return [(-hw, z0), (hw, z0), (hw, z1), (-hw, z1)]
+
+
+def compute_default_fixed_hardware_inputs(
+    W_mm: float,
+    x_front_mm: float,
+    d_halo_mm: float,
+    ref_plane_A_m: float,
+    ref_plane_B_m: float,
+) -> dict:
+    """
+    Build a full set of design-default fixed hardware inputs for
+    place_fixed_hardware(), given the current outer-loop scalars.
+
+    Returns a dict with keys matching place_fixed_hardware()'s parameter
+    names: halo_geometry, canister_com_mm, canister_box_half_size_mm,
+    wheel_axle_mass_kg, wheel_axle_com_mm, wheel_x_half_width_mm,
+    wheel_axle_z_mm, rear_wing_mass_kg, rear_wing_com_mm.
+    """
+    from halo_pocket import compute_halo_pocket_box_m, HALO_POCKET_LENGTH_MM
+
+    pocket = compute_halo_pocket_box_m(ref_plane_A_m, d_halo_mm)
+    halo_geometry = HaloGeometry(
+        x_front_m=pocket["x_min_m"],
+        x_rear_m=pocket["x_max_m"],
+        cross_section_yz_m=default_halo_cross_section_yz_m(),
+    )
+
+    # Canister: centred fore-aft near the rear of main_body's machined
+    # territory (Ref Plane B), so its chamber can protrude out the true rear
+    # of the assembled car (T5.6).
+    canister_x_m = ref_plane_B_m - mm_to_m(CANISTER_DEPTH_MM / 2.0)
+    canister_com_mm = (canister_x_m * 1000.0, 0.0, CANISTER_Z_MM)
+    canister_box_half_size_mm = CANISTER_DIAMETER_MM / 2.0 + CANISTER_SAFETY_ZONE_MM
+
+    # Wheels+axles: COM at the midpoint between front and rear axle (equal
+    # front/rear contribution assumed), on centreline, at wheel-radius height.
+    x_front_m = mm_to_m(x_front_mm)
+    W_m = mm_to_m(W_mm)
+    wheel_axle_com_mm = ((x_front_m + W_m / 2.0) * 1000.0, 0.0, R_WHEEL_M * 1000.0)
+
+    # Rear wing: aft of Ref Plane B by REAR_WING_OVERHANG_MM, on centreline.
+    rear_wing_x_m = ref_plane_B_m + mm_to_m(REAR_WING_OVERHANG_MM)
+    rear_wing_com_mm = (rear_wing_x_m * 1000.0, 0.0, REAR_WING_HEIGHT_MM)
+
+    return {
+        "halo_geometry": halo_geometry,
+        "canister_com_mm": canister_com_mm,
+        "canister_box_half_size_mm": canister_box_half_size_mm,
+        "wheel_axle_mass_kg": WHEEL_AXLE_MASS_KG,
+        "wheel_axle_com_mm": wheel_axle_com_mm,
+        "wheel_x_half_width_mm": 8.0,
+        "wheel_axle_z_mm": R_WHEEL_M * 1000.0,
+        "rear_wing_mass_kg": REAR_WING_MASS_KG,
+        "rear_wing_com_mm": rear_wing_com_mm,
+    }

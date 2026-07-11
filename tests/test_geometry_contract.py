@@ -83,12 +83,12 @@ def test_validate_W_invalid():
 
 def test_validate_d_halo_valid():
     gc.validate_d_halo(0.0, 130.0)
-    gc.validate_d_halo(146.0, 130.0)   # W+16 = 146
+    gc.validate_d_halo(100.0, 130.0)   # min(100, W+16=146) = 100
     _pass("test_validate_d_halo_valid")
 
 def test_validate_d_halo_invalid():
     try:
-        gc.validate_d_halo(147.0, 130.0)   # W+16=146, so 147 is invalid
+        gc.validate_d_halo(100.1, 130.0)   # min(100, W+16=146)=100, so 100.1 is invalid
         _fail("test_validate_d_halo_invalid", "should have raised")
     except ValueError:
         pass
@@ -98,6 +98,14 @@ def test_validate_d_halo_invalid():
     except ValueError:
         pass
     _pass("test_validate_d_halo_invalid")
+
+def test_calibrate_d_halo_max_always_100_in_W_range():
+    """For W in [120,140], min(100, W+16) always equals exactly 100."""
+    for W_mm in (120.0, 130.0, 140.0):
+        assert gc.calibrate_d_halo_max_mm(W_mm) == 100.0, (
+            f"W={W_mm}: expected d_halo max=100.0, got {gc.calibrate_d_halo_max_mm(W_mm)}"
+        )
+    _pass("test_calibrate_d_halo_max_always_100_in_W_range")
 
 def test_halo_z_min():
     assert gc.HALO_MIN_Z_MM == 24.0
@@ -162,6 +170,7 @@ if __name__ == "__main__":
     test_validate_W_invalid()
     test_validate_d_halo_valid()
     test_validate_d_halo_invalid()
+    test_calibrate_d_halo_max_always_100_in_W_range()
     test_halo_z_min()
     test_lifecycle_states_count()
     test_lifecycle_states_exact_names()
