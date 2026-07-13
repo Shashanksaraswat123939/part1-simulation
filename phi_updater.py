@@ -363,15 +363,12 @@ def apply_adjoint_sensitivity_symmetric(
     the function logs a warning and returns without updating — it does NOT
     silently skip as the previous implementation did.
     """
-    import warnings
-
     if right_half_mesh is None or right_half_sensitivity is None:
-        warnings.warn(
-            "apply_adjoint_sensitivity_symmetric: right_half_mesh or sensitivity is None. "
-            "No phi grids updated this iteration. This is expected only during testing.",
-            stacklevel=2,
+        raise ValueError(
+            "apply_adjoint_sensitivity_symmetric: right_half_mesh and right_half_sensitivity "
+            "must both be provided. Passing None silently skips the φ update, which causes "
+            "ΔT=0 and false convergence in the optimizer (audit finding P1-13)."
         )
-        return
 
     vertices = np.asarray(right_half_mesh.vertices, dtype=np.float64)
     sensitivity = np.asarray(right_half_sensitivity, dtype=np.float64)
@@ -382,10 +379,24 @@ def apply_adjoint_sensitivity_symmetric(
             f"right_half_mesh has {len(vertices)} vertices. They must match."
         )
 
-    w_aero = gradient_weights.get("aero", 1.0)
-    w_mass = gradient_weights.get("mass", 0.3)
-    w_com  = gradient_weights.get("com",  0.3)
-    w_mfg  = gradient_weights.get("mfg",  0.1)
+    _REQUIRED_WEIGHT_KEYS = frozenset({"w_aero", "w_mass", "w_com", "w_mfg"})
+    _unknown = set(gradient_weights) - _REQUIRED_WEIGHT_KEYS
+    if _unknown:
+        raise KeyError(
+            f"gradient_weights has unknown keys {sorted(_unknown)}. "
+            f"Required keys: {sorted(_REQUIRED_WEIGHT_KEYS)}. "
+            "Using .get() with defaults silently discards calibrated weights — "
+            "see audit finding K-3."
+        )
+    _missing = _REQUIRED_WEIGHT_KEYS - set(gradient_weights)
+    if _missing:
+        raise KeyError(
+            f"gradient_weights is missing required keys {sorted(_missing)}."
+        )
+    w_aero = gradient_weights["w_aero"]
+    w_mass = gradient_weights["w_mass"]
+    w_com  = gradient_weights["w_com"]
+    w_mfg  = gradient_weights["w_mfg"]
 
     for name, phi in phi_grids.items():
         nx, ny, nz = phi.bv.shape
@@ -424,3 +435,9 @@ def apply_adjoint_sensitivity_symmetric(
         )
 
         hj_update(phi, combined, dt)
+
+
+# K-2: SPEC.txt §22 names the φ-update entry point `update_phi`. Part 1 uses
+# `apply_adjoint_sensitivity_symmetric`. Expose both names so Part 3's
+# `from phi_updater import update_phi` succeeds without renaming the function.
+update_phi = apply_adjoint_sensitivity_symmetric

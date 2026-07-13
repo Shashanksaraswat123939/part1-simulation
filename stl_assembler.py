@@ -77,7 +77,7 @@ def assemble_stl(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     full_path = out_path / f"car_{candidate_id}_full.stl"
-    full_car.export(str(full_path))
+    full_car.export(str(full_path), file_type="stl-ascii")
 
     # ── Right-half STL (per-component slicing) ─────────────────────────────
     # Slice each symmetric component individually, then add the sidepod directly.
@@ -102,9 +102,14 @@ def assemble_stl(
             # Fallback: take faces with centroid y >= 0
             centres = mesh.triangles_center
             right_face_idx = np.where(centres[:, 1] >= -1e-6)[0]
-            if len(right_face_idx) > 0:
-                sub = mesh.submesh([right_face_idx], append=True)
-                half_parts.append(sub)
+            if len(right_face_idx) == 0:
+                from surface_extraction import MeshQualityFailure
+                raise MeshQualityFailure(
+                    f"Component '{name}': slice fallback produced zero right-half "
+                    "faces — component would be silently dropped from the half-car STL."
+                )
+            sub = mesh.submesh([right_face_idx], append=True)
+            half_parts.append(sub)
 
     right_half = trimesh.util.concatenate(half_parts)
     trimesh.repair.fix_winding(right_half)
@@ -127,6 +132,6 @@ def assemble_stl(
         raise MeshQualityFailure("Right half has vertices with y < 0 after slicing.")
 
     half_path = out_path / f"car_{candidate_id}_half.stl"
-    right_half.export(str(half_path))
+    right_half.export(str(half_path), file_type="stl-ascii")
 
     return (str(full_path.resolve()), str(half_path.resolve()))

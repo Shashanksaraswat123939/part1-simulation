@@ -222,24 +222,36 @@ def validate_x_front(x_front_mm: float, W_mm: float) -> None:
             f"[{x_min}, {x_max}] mm for W={W_mm} mm."
         )
 
-D_HALO_ABS_MAX_MM: float = 100.0   # practical cap on halo placement, confirmed by project owner
+# d_halo upper bound is derived from the halo pocket placement constraint:
+#   pocket_rear = (x_front - REF_A_OFFSET) + d_halo + POCKET_LENGTH
+#              must be < rear_axle = x_front + W
+#   → d_halo < W - (POCKET_LENGTH - REF_A_OFFSET) = W - (50 - 16) = W - 34
+# Constants match halo_pocket.HALO_POCKET_LENGTH_MM and the 16mm Ref Plane A offset.
+D_HALO_POCKET_LENGTH_MM: float = 50.0   # T4.4.4 Appendix ix
+D_HALO_REF_A_OFFSET_MM: float = 16.0   # Ref Plane A is 16mm ahead of front axle
+# Strict exclusive upper bound: d_halo < W - 34.  The placement check in
+# fixed_hardware._validate_halo_position uses ">=" so the limit is strict.
+_D_HALO_PLACEMENT_MARGIN_MM: float = D_HALO_POCKET_LENGTH_MM - D_HALO_REF_A_OFFSET_MM  # 34 mm
 
 def calibrate_d_halo_max_mm(W_mm: float) -> float:
     """
-    Return the d_halo upper bound for the given wheelbase.
+    Return the exclusive d_halo upper bound for the given wheelbase.
 
-    min(100, W+16) mm -- 100mm is a practical placement cap; W+16 guards against
-    the halo pocket (Ref Plane A + d_halo, 50mm long) extending past the rear
-    axle for very small W. For W in [120,140], W+16 is always >= 136, so this
-    always evaluates to exactly 100mm in practice.
+    Derived from the halo pocket placement constraint (see constants above):
+        d_halo < W - 34 mm
+
+    For W in [120, 140] this gives [86, 106) mm — substantially tighter than
+    the previous min(100, W+16) which allowed values the placement check rejects.
+    The returned value is the STRICT upper bound (d_halo must be < this value).
     """
-    return min(D_HALO_ABS_MAX_MM, W_mm + 16.0)
+    return W_mm - _D_HALO_PLACEMENT_MARGIN_MM
 
 def validate_d_halo(d_halo_mm: float, W_mm: float) -> None:
-    """Raise ValueError if d_halo is outside [0, min(100, W+16)] mm."""
+    """Raise ValueError if d_halo is outside [0, W-34) mm (strict upper bound)."""
     d_max = calibrate_d_halo_max_mm(W_mm)
-    if not (0.0 <= d_halo_mm <= d_max):
+    if not (0.0 <= d_halo_mm < d_max):
         raise ValueError(
             f"d_halo={d_halo_mm} mm is outside allowed range "
-            f"[0.0, {d_max}] mm for W={W_mm} mm."
+            f"[0.0, {d_max:.1f}) mm for W={W_mm} mm. "
+            f"Upper bound is W-34 mm (placement-derived: pocket rear must not reach rear axle)."
         )

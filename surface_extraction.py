@@ -134,9 +134,14 @@ def _estimate_local_radii(mesh: "trimesh.Trimesh") -> np.ndarray:
         )
         curvature_abs = np.abs(H_area)
         return np.where(curvature_abs > 1e-9, 1.0 / curvature_abs, 1e6)
-    except Exception:
-        # curvature unavailable or failed — conservatively pass all vertices
-        return np.full(n_verts, 1e6, dtype=np.float64)
+    except Exception as _exc:
+        # Curvature measurement failure is a gate failure, not a pass.
+        # Returning 1e6 (infinite radius) would silently pass sub-threshold
+        # features that trimesh could not measure — see audit finding P1-3.
+        raise MeshQualityFailure(
+            f"Curvature measurement failed ({_exc!r}); cannot verify minimum radius. "
+            "Check that rtree and scipy are installed and the mesh is non-degenerate."
+        ) from _exc
 
 def _smooth_phi_neighbourhood(
     phi: PhiGrid, vertex_indices: list[int], mesh: "trimesh.Trimesh"
@@ -353,19 +358,27 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
         raise MeshQualityFailure(f"{component}: Mesh is not a valid volume.")
 
     # ── Triangle angle check (B3 fix) ────────────────────────────────────
+    # NOTE: MeshQualityFailure must propagate out; only catch numerical errors
+    # from the *computation* step, never from the *verdict* step.
     try:
         angles_rad = trimesh.triangles.angles(mesh.triangles)  # (n, 3) radians
         min_angle_deg = float(np.degrees(angles_rad.min()))
+    except Exception:
+        angles_rad = None
+        min_angle_deg = None
 
-        if min_angle_deg < MESH_MIN_TRIANGLE_ANGLE_DEG:
-            # Attempt quadric simplification to improve triangle quality
+    if min_angle_deg is not None and min_angle_deg < MESH_MIN_TRIANGLE_ANGLE_DEG:
+        simplified = None
+        try:
+            simplified = mesh.simplify_quadric_decimation(percent=0.9)
+        except Exception:
+            pass
+        if simplified is not None:
             try:
-                mesh_simplified = mesh.simplify_quadric_decimation(percent=0.9)
-                angles_rad2 = trimesh.triangles.angles(mesh_simplified.triangles)
+                angles_rad2 = trimesh.triangles.angles(simplified.triangles)
                 if float(np.degrees(angles_rad2.min())) >= MESH_MIN_TRIANGLE_ANGLE_DEG:
-                    # Simplification improved quality — use simplified mesh
-                    mesh.vertices = mesh_simplified.vertices
-                    mesh.faces = mesh_simplified.faces
+                    mesh.vertices = simplified.vertices
+                    mesh.faces = simplified.faces
                 else:
                     raise MeshQualityFailure(
                         f"{component}: Triangle quality below snappyHexMesh tolerance "
@@ -376,38 +389,48 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
             except MeshQualityFailure:
                 raise
             except Exception:
-                # Simplification failed — flag but don't crash (quality warning)
                 pass
-    except Exception:
-        # trimesh.triangles.angles may fail on degenerate meshes; skip angle check
-        pass
+        else:
+            raise MeshQualityFailure(
+                f"{component}: Triangle quality below snappyHexMesh tolerance "
+                f"(min angle {min_angle_deg:.1f}° < {MESH_MIN_TRIANGLE_ANGLE_DEG}°) "
+                "and simplification failed."
+            )
 
     # ── Triangle aspect ratio check ──────────────────────────────────────
     try:
         aspect_ratios = _triangle_aspect_ratios(mesh)
         max_ratio = float(aspect_ratios.max())
+    except Exception:
+        max_ratio = None
 
-        if max_ratio > MESH_MAX_ASPECT_RATIO:
+    if max_ratio is not None and max_ratio > MESH_MAX_ASPECT_RATIO:
+        simplified = None
+        try:
+            simplified = mesh.simplify_quadric_decimation(percent=0.9)
+        except Exception:
+            pass
+        if simplified is not None:
             try:
-                mesh_simplified = mesh.simplify_quadric_decimation(percent=0.9)
-                ratios2 = _triangle_aspect_ratios(mesh_simplified)
+                ratios2 = _triangle_aspect_ratios(simplified)
                 if float(ratios2.max()) <= MESH_MAX_ASPECT_RATIO:
-                    mesh.vertices = mesh_simplified.vertices
-                    mesh.faces = mesh_simplified.faces
+                    mesh.vertices = simplified.vertices
+                    mesh.faces = simplified.faces
                 else:
                     raise MeshQualityFailure(
                         f"{component}: Triangle aspect ratio "
                         f"{float(ratios2.max()):.1f} > {MESH_MAX_ASPECT_RATIO} "
-                        f"after simplification."
+                        "after simplification."
                     )
             except MeshQualityFailure:
                 raise
             except Exception:
-                # Simplification failed — flag but don't crash (quality warning)
                 pass
-    except Exception:
-        # Aspect ratio computation may fail on degenerate meshes; skip
-        pass
+        else:
+            raise MeshQualityFailure(
+                f"{component}: Triangle aspect ratio {max_ratio:.1f} > "
+                f"{MESH_MAX_ASPECT_RATIO} and simplification failed."
+            )
 
 
 # ── Main extraction function ───────────────────────────────────────────────
