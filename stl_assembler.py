@@ -77,7 +77,7 @@ def assemble_stl(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     full_path = out_path / f"car_{candidate_id}_full.stl"
-    full_car.export(str(full_path), file_type="stl-ascii")
+    full_car.export(str(full_path), file_type="stl_ascii")
 
     # ── Right-half STL (per-component slicing) ─────────────────────────────
     # Slice each symmetric component individually, then add the sidepod directly.
@@ -132,6 +132,6 @@ def assemble_stl(
         raise MeshQualityFailure("Right half has vertices with y < 0 after slicing.")
 
     half_path = out_path / f"car_{candidate_id}_half.stl"
-    right_half.export(str(half_path), file_type="stl-ascii")
+    right_half.export(str(half_path), file_type="stl_ascii")
 
     return (str(full_path.resolve()), str(half_path.resolve()))
