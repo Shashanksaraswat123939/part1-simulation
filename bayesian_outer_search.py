@@ -37,18 +37,31 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 import time
 import math
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
+# ── Part 3 path (for the real Level 2 pipeline) ────────────────────────────────
+# Mirrors fixed_hardware.py's PART2_PATH pattern. Only needed when
+# SearchConfig.use_real_pipeline=True; the proxy path never imports Part 3.
+_part3_path = os.environ.get(
+    "PART3_PATH",
+    str(Path(__file__).resolve().parent.parent / "part3-simulation"),
+)
+if _part3_path not in sys.path:
+    sys.path.insert(0, _part3_path)
+
 # ── Geometry imports ───────────────────────────────────────────────────────────
 from geometry_contract import (
     W_MIN_MM, W_MAX_MM, X_FRONT_MIN_MM, X_FRONT_ABS_MAX_MM,
-    calibrate_x_front_bounds, validate_W, validate_x_front, validate_d_halo,
+    calibrate_x_front_bounds, calibrate_d_halo_max_mm,
+    validate_W, validate_x_front, validate_d_halo,
     mm_to_m, CO2_MASS_KG, R_WHEEL_M, WHEEL_CLEARANCE_M,
     PHI_SNAPSHOT_COMPONENT_KEYS,
 )
@@ -87,8 +100,71 @@ class SearchConfig:
     # GP fitting: restart count for acquisition optimisation
     acqf_restarts:   int   = 5
     acqf_raw_samples: int  = 32
-    # Level 2 stub: number of phi-update iterations (0 = geometry-only, no evolution)
+    # Level 2 stub: number of phi-update iterations (0 = geometry-only, no evolution).
+    # Only used when use_real_pipeline=False.
     level2_iters:    int   = 0
+
+    # ── Real Level 2 (Part 3's evolutionary inner loop, real CFD+adjoint) ──
+    # When True, each evaluated (W, x_front, d_halo) point is scored by
+    # actually running Part 3's wheelbase_sweep.optimize_single_w -- a real
+    # M-candidate evolutionary population, each candidate running the full
+    # inner loop (gates -> mass/COM -> real OpenFOAM CFD -> race objective ->
+    # real OpenFOAM adjoint -> phi update) -- instead of the proxy formula
+    # below. This is what "wiring the Bayesian search to the evolutionary
+    # loop" means architecturally (P1-18: Level 1 proposes, Part 3 executes).
+    #
+    # HONEST COST WARNING: a single evolutionary candidate's adjoint solve
+    # alone took ~105s on a trivial coarse-mesh toy geometry in this
+    # project's own live testing (see project notes, 2026-07-14); real
+    # production-scale geometry will be slower (P1-14's known pure-Python
+    # performance limits compound this further). A default-sized search
+    # (n_initial=15, n_iterations=65 => 80 outer evaluations, each running
+    # n_candidates_per_point evolutionary candidates for n_evolution_rounds
+    # rounds) is a multi-hour-to-multi-day undertaking with this flag on.
+    # Keep n_candidates_per_point / n_evolution_rounds / iteration_budget
+    # small, and n_initial+n_iterations small, for a first real run -- this
+    # is not a bug, it is what real CFD costs.
+    #
+    # Defaults to False (the fast geometry-only proxy) so constructing a
+    # SearchConfig with no arguments never accidentally triggers hours of
+    # OpenFOAM solves.
+    use_real_pipeline: bool = False
+    thrust_csv_path:  Optional[str] = None
+    fixed_hardware_kwargs: Optional[dict] = None
+    gradient_weights: "object" = None          # optimizer_contract.GradientWeights
+    mu:               float = 0.4
+    wheel_moi_kg_m2:  float = 1e-6
+    rtc_validated_against_track_data: bool = False
+    cfd_pipeline_validated_on_known_geometry: bool = False
+    n_candidates_per_point: int = 3     # M, evolutionary population size per outer point
+    n_evolution_rounds:     int = 2
+    inner_iteration_budget: int = 5     # Part 3 OptimizerConfig.iteration_budget
+
+    def __post_init__(self) -> None:
+        if self.use_real_pipeline:
+            missing = [
+                name for name in ("thrust_csv_path", "fixed_hardware_kwargs", "gradient_weights")
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"use_real_pipeline=True requires {missing} to be set. "
+                    "The real Level 2 path needs a real thrust curve, fixed-"
+                    "hardware mass/COM spec, and gradient weights -- there is "
+                    "no safe default for any of these (see project spec's "
+                    "Adjoint Objective / Gradient Combination sections)."
+                )
+            if not (self.rtc_validated_against_track_data and self.cfd_pipeline_validated_on_known_geometry):
+                raise ValueError(
+                    "use_real_pipeline=True requires BOTH "
+                    "rtc_validated_against_track_data and "
+                    "cfd_pipeline_validated_on_known_geometry to be True -- "
+                    "this mirrors Part 3's own orchestrator.run_full_search "
+                    "gate (03_optimizer_workflow spec, Search Strategy steps "
+                    "1-2). Flipping these without doing the real physical/CFD "
+                    "validation experiments is a lie the code cannot detect, "
+                    "but it will not silently proceed as if you had."
+                )
 
 
 @dataclass
@@ -129,12 +205,15 @@ def _abs_bounds() -> tuple[tuple[float, float], tuple[float, float], tuple[float
 
     W:        [120, 140] mm  (T7.3)
     x_front:  [61,   90] mm  (X_FRONT_MIN to X_FRONT_ABS_MAX)
-    d_halo:   [0,   156] mm  (0 to W_MAX+16)
+    d_halo:   [0,   106) mm  (0 to calibrate_d_halo_max_mm(W_MAX_MM), K-5:
+              placement-derived W-34, exclusive -- was the stale W_MAX+16=156
+              until this pass, which let Sobol/BO samples land in a dead zone
+              (100-156mm) that geometry always rejects, wasting evaluations)
     """
     return (
         (W_MIN_MM,         W_MAX_MM),
         (X_FRONT_MIN_MM,   X_FRONT_ABS_MAX_MM),
-        (0.0,              W_MAX_MM + 16.0),
+        (0.0,              calibrate_d_halo_max_mm(W_MAX_MM)),
     )
 
 
@@ -197,22 +276,38 @@ def _level2_evaluate(
     output_dir: str,
     eval_id:    int,
     warm_phi_paths: Optional[dict[str, str]] = None,
+    search_config: Optional[SearchConfig] = None,
 ) -> EvaluationResult:
     """
-    Level 2 inner loop — geometry-pipeline stub.
+    Level 2 inner loop.
 
-    Builds the phi grids for (W, x_front, d_halo), runs n_iters of Hamilton-Jacobi
-    evolution (currently 0 by default — pure geometry), computes mass/COM, and returns
-    a proxy race time.
+    Two modes, selected by search_config.use_real_pipeline (default False /
+    search_config=None -- unchanged proxy behavior, so every existing caller
+    and test keeps working exactly as before):
 
-    Race-time proxy (lower = better):
-        T = 0.5 * (mass / 0.055)      # mass contribution (target ~55 g)
-          + 0.3 * (h_com / 0.025)     # COM height contribution (target ~25 mm)
-          + 0.2 * (W / 130)           # wheelbase penalty (prefer shorter)
+      use_real_pipeline=False (proxy, default): builds the phi grids for
+        (W, x_front, d_halo), runs n_iters of Hamilton-Jacobi evolution
+        (currently 0 by default -- pure geometry), computes mass/COM, and
+        returns a PROXY race time:
+            T = 0.5 * (mass / 0.055)      # mass contribution (target ~55 g)
+              + 0.3 * (h_com / 0.025)     # COM height contribution (target ~25 mm)
+              + 0.2 * (W / 130)           # wheelbase penalty (prefer shorter)
+        All three terms normalised so a "perfect" car would score ~1.0.
+        Fast, no CFD -- for wiring/architecture testing and quick sweeps.
 
-    All three terms normalised so a "perfect" car would score ≈ 1.0. Real race time
-    comes from Part 2 CFD; replace this function body when Part 2 is integrated.
+      use_real_pipeline=True: delegates to _level2_evaluate_real, which runs
+        Part 3's actual evolutionary inner loop (wheelbase_sweep.optimize_single_w)
+        -- real quality gates, real OpenFOAM CFD, the real race objective,
+        real OpenFOAM adjoint, real phi updates -- and returns the winning
+        candidate's real T_penalized. See SearchConfig.use_real_pipeline's
+        docstring for the wall-clock cost this implies.
     """
+    if search_config is not None and search_config.use_real_pipeline:
+        return _level2_evaluate_real(
+            W_mm, x_front_mm, d_halo_mm, output_dir, eval_id,
+            warm_phi_paths, search_config,
+        )
+
     t0 = time.perf_counter()
 
     # Build forbidden zones in nose-tip coordinate system
@@ -394,6 +489,140 @@ def _level2_evaluate(
     )
 
 
+# ── Level 2 real (Part 3's evolutionary inner loop) ─────────────────────────────
+# Bindings are expensive to construct (parses the thrust CSV, fits the locked
+# race objective's SmoothSheetModel) -- cached per SearchConfig instance so a
+# whole search only pays that cost once, not once per outer evaluation.
+_real_bindings_cache: dict[int, object] = {}
+
+
+def _get_real_bindings(search_config: SearchConfig):
+    key = id(search_config)
+    if key not in _real_bindings_cache:
+        from pipeline_interface import real_bindings
+        _real_bindings_cache[key] = real_bindings(
+            thrust_csv_path=search_config.thrust_csv_path,
+            fixed_hardware_kwargs=search_config.fixed_hardware_kwargs,
+            out_dir=search_config.output_dir,
+        )
+    return _real_bindings_cache[key]
+
+
+def _level2_evaluate_real(
+    W_mm:       float,
+    x_front_mm: float,
+    d_halo_mm:  float,
+    output_dir: str,
+    eval_id:    int,
+    warm_phi_paths: Optional[dict[str, str]],
+    search_config: SearchConfig,
+) -> EvaluationResult:
+    """
+    Real Level 2: run Part 3's actual evolutionary inner loop at this
+    (W, x_front, d_halo) point and return the winning candidate's real
+    T_penalized as the race time.
+
+    This is the P1-18 wiring: Level 1 (this file) proposes points, Part 3
+    (wheelbase_sweep.optimize_single_w) executes an M-candidate evolutionary
+    population at each proposed point -- real quality gates, real OpenFOAM
+    CFD, the real race objective, real OpenFOAM adjoint, real phi updates.
+
+    Known scope limitation: Level 1's own warm-start mechanism (nearest
+    previous evaluation in normalised 3D space, via saved .npy snapshots) is
+    NOT threaded into Part 3's call here -- Part 3's warm-starting is built
+    around ADJACENT W values in a monotonic sweep (see wheelbase_sweep.py's
+    docstring), which doesn't map cleanly onto Bayesian optimisation's
+    arbitrary jumps around the 3D space. Every real evaluation currently
+    starts from fresh phi grids (bindings.initialize_phi_fields). warm_phi_paths
+    is accepted for signature symmetry with the proxy path but intentionally
+    unused here; revisit if evaluation cost makes this matter in practice.
+
+    CandidateOutcome (Part 3's per-candidate result type) does not carry
+    mass_kg/h_com_m/x_com_m -- those are internal to the inner loop's
+    objective computation and never surface on the record. mass_kg/h_com_m/
+    x_com_m are therefore 0.0 in the returned EvaluationResult for this path
+    (documented, not fabricated) -- only race_time and lifecycle are
+    meaningful. Use the candidate record (record_path) for the real mass/COM
+    if needed.
+    """
+    from wheelbase_sweep import optimize_single_w
+    from optimizer_contract import OptimizerConfig, FAILURE_PENALTY_S
+
+    t0 = time.perf_counter()
+
+    # Cheap pre-check before touching Part 3 at all. optimize_single_w only
+    # eagerly validates W and x_front (see wheelbase_sweep.py) -- an invalid
+    # d_halo is NOT caught until every candidate in the evolutionary
+    # population has individually failed inside run_inner_loop (found live:
+    # without this check, an invalid d_halo wasted a full n_candidates_per_point
+    # population attempt and was misreported as "objective_failed" instead
+    # of "geometry_rejected"). _is_valid checks all three together.
+    if not _is_valid(W_mm, x_front_mm, d_halo_mm):
+        return EvaluationResult(
+            W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
+            race_time=FAILURE_PENALTY_S, mass_kg=0.0, h_com_m=0.0, x_com_m=0.0,
+            lifecycle="geometry_rejected",
+            wall_time_s=time.perf_counter() - t0,
+        )
+
+    bindings = _get_real_bindings(search_config)
+
+    part3_config = OptimizerConfig(
+        rtc_validated_against_track_data=search_config.rtc_validated_against_track_data,
+        cfd_pipeline_validated_on_known_geometry=search_config.cfd_pipeline_validated_on_known_geometry,
+        mu=search_config.mu,
+        wheel_moi_kg_m2=search_config.wheel_moi_kg_m2,
+        iteration_budget=search_config.inner_iteration_budget,
+        random_seed=search_config.random_seed + eval_id,
+    )
+
+    try:
+        w_result = optimize_single_w(
+            bindings, part3_config, W_mm, x_front_mm, d_halo_mm,
+            n_candidates=search_config.n_candidates_per_point,
+            out_dir=output_dir,
+            gradient_weights=search_config.gradient_weights,
+            n_evolution_rounds=search_config.n_evolution_rounds,
+            candidate_prefix=f"bo_eval{eval_id:04d}",
+        )
+    except ValueError as exc:
+        # (W, x_front, d_halo) itself is geometrically invalid -- same
+        # "cheap rejection before Level 2" behavior as the proxy path.
+        return EvaluationResult(
+            W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
+            race_time=FAILURE_PENALTY_S, mass_kg=0.0, h_com_m=0.0, x_com_m=0.0,
+            lifecycle="geometry_rejected",
+            wall_time_s=time.perf_counter() - t0,
+        )
+
+    if w_result.best is None:
+        if w_result.task_failures:
+            print(f"  [bo_eval{eval_id:04d}] all candidates failed; last error: "
+                  f"{w_result.task_failures[-1].message}")
+        return EvaluationResult(
+            W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
+            race_time=FAILURE_PENALTY_S, mass_kg=0.0, h_com_m=0.0, x_com_m=0.0,
+            lifecycle="objective_failed",
+            wall_time_s=time.perf_counter() - t0,
+        )
+
+    snapshots: dict[str, str] = {}
+    if w_result.best_phi_grids is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        candidate_id = f"bo_eval{eval_id:04d}"
+        for comp, pg in w_result.best_phi_grids.items():
+            snapshots[comp] = pg.save(candidate_id, output_dir)
+
+    return EvaluationResult(
+        W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
+        race_time=w_result.best.ranking_time_s(),
+        mass_kg=0.0, h_com_m=0.0, x_com_m=0.0,  # not on CandidateOutcome -- see docstring
+        lifecycle=w_result.best.lifecycle_state,
+        phi_snapshots=snapshots,
+        wall_time_s=time.perf_counter() - t0,
+    )
+
+
 class _StubCylinder:
     """Minimal cylinder stub when fixed_hardware (Part 2 dep) is unavailable."""
     def __init__(self, x_front_mm: float, W_mm: float, lead: bool):
@@ -486,7 +715,10 @@ class BayesianOuterSearch:
         W_mm       = float(np.clip(W_mm,       W_MIN_MM,    W_MAX_MM))
         xf_lo, xf_hi = calibrate_x_front_bounds(W_mm)
         x_front_mm = float(np.clip(x_front_mm, xf_lo,       xf_hi))
-        dh_hi      = W_mm + 16.0
+        # calibrate_d_halo_max_mm returns a STRICT (exclusive) upper bound
+        # (K-5: placement-derived W-34, not the stale W+16). Clip to a hair
+        # under it so the clamped value still passes validate_d_halo's "<".
+        dh_hi      = calibrate_d_halo_max_mm(W_mm) - 1e-6
         d_halo_mm  = float(np.clip(d_halo_mm,  0.0,         dh_hi))
 
         warm = self._find_warm_start(W_mm, x_front_mm, d_halo_mm)
@@ -499,6 +731,7 @@ class BayesianOuterSearch:
             output_dir=self.cfg.output_dir,
             eval_id=self._eval_count,
             warm_phi_paths=warm,
+            search_config=self.cfg,
         )
         self._results.append(result)
         n_valid = sum(1 for r in self._results if r.race_time < 1e5)

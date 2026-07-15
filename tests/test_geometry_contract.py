@@ -82,13 +82,21 @@ def test_validate_W_invalid():
     _pass("test_validate_W_invalid")
 
 def test_validate_d_halo_valid():
+    # K-5 fix: upper bound is W-34 mm, strict/exclusive (placement-derived --
+    # was min(100, W+16), which allowed candidates Part 1's hardware
+    # placement check rejected). At W=130: bound is 96.0 mm.
     gc.validate_d_halo(0.0, 130.0)
-    gc.validate_d_halo(100.0, 130.0)   # min(100, W+16=146) = 100
+    gc.validate_d_halo(95.99, 130.0)
     _pass("test_validate_d_halo_valid")
 
 def test_validate_d_halo_invalid():
     try:
-        gc.validate_d_halo(100.1, 130.0)   # min(100, W+16=146)=100, so 100.1 is invalid
+        gc.validate_d_halo(96.0, 130.0)   # W-34=96, strict upper bound -- 96.0 itself is invalid
+        _fail("test_validate_d_halo_invalid", "should have raised")
+    except ValueError:
+        pass
+    try:
+        gc.validate_d_halo(100.1, 130.0)
         _fail("test_validate_d_halo_invalid", "should have raised")
     except ValueError:
         pass
@@ -99,13 +107,18 @@ def test_validate_d_halo_invalid():
         pass
     _pass("test_validate_d_halo_invalid")
 
-def test_calibrate_d_halo_max_always_100_in_W_range():
-    """For W in [120,140], min(100, W+16) always equals exactly 100."""
-    for W_mm in (120.0, 130.0, 140.0):
-        assert gc.calibrate_d_halo_max_mm(W_mm) == 100.0, (
-            f"W={W_mm}: expected d_halo max=100.0, got {gc.calibrate_d_halo_max_mm(W_mm)}"
+def test_calibrate_d_halo_max_scales_with_W():
+    """K-5 fix: bound is W-34 mm (placement-derived, strict/exclusive),
+    NOT the old min(100, W+16) which was always exactly 100 across the whole
+    W range -- the new bound genuinely scales with W (86 at W=120, 106 at
+    W=140), reflecting that the halo pocket's legal room really does depend
+    on wheelbase."""
+    for W_mm, expected in ((120.0, 86.0), (130.0, 96.0), (140.0, 106.0)):
+        got = gc.calibrate_d_halo_max_mm(W_mm)
+        assert abs(got - expected) < 1e-9, (
+            f"W={W_mm}: expected d_halo max={expected}, got {got}"
         )
-    _pass("test_calibrate_d_halo_max_always_100_in_W_range")
+    _pass("test_calibrate_d_halo_max_scales_with_W")
 
 def test_halo_z_min():
     assert gc.HALO_MIN_Z_MM == 24.0
@@ -128,10 +141,16 @@ def test_lifecycle_states_exact_names():
     _pass("test_lifecycle_states_exact_names")
 
 def test_tool_directions_all_components():
-    for name in ("nose", "sidepod", "rearpod", "main_body"):
+    # Nose is 3D printed (user-confirmed 2026-07-14), not CNC-milled -- it
+    # has no TOOL_DIRECTIONS entry at all (no directional tool-access
+    # constraint applies; it has a minimum wall-thickness constraint
+    # instead -- see NOSE_MIN_WALL_THICKNESS_MM).
+    for name in ("sidepod", "rearpod", "main_body"):
         assert name in gc.TOOL_DIRECTIONS, f"Missing tool directions for {name}"
         dirs = gc.TOOL_DIRECTIONS[name]
         assert len(dirs) >= 2, f"{name} has only {len(dirs)} tool directions"
+    assert "nose" not in gc.TOOL_DIRECTIONS, \
+        "nose is 3D printed and should have no TOOL_DIRECTIONS entry"
     _pass("test_tool_directions_all_components")
 
 def test_tool_directions_unit_vectors():
@@ -170,7 +189,7 @@ if __name__ == "__main__":
     test_validate_W_invalid()
     test_validate_d_halo_valid()
     test_validate_d_halo_invalid()
-    test_calibrate_d_halo_max_always_100_in_W_range()
+    test_calibrate_d_halo_max_scales_with_W()
     test_halo_z_min()
     test_lifecycle_states_count()
     test_lifecycle_states_exact_names()

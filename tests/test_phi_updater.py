@@ -140,16 +140,19 @@ def test_apply_adjoint_sensitivity_mismatched_lengths_raises():
         _pass("test_apply_adjoint_sensitivity_mismatched_lengths_raises")
 
 
-def test_apply_adjoint_sensitivity_warns_on_none():
-    import warnings
+def test_apply_adjoint_sensitivity_raises_on_none():
+    # P1-13 fix: a None sensitivity/mesh used to silently warn-and-skip,
+    # which in the optimizer loop meant DeltaT=0 -> false convergence. It
+    # now raises ValueError instead, so a skipped update can never masquerade
+    # as a converged result.
     phi = _make_phi()
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
+    try:
         apply_adjoint_sensitivity_symmetric(
             {"main_body": phi}, None, None, dt=1e-4, gradient_weights={},
         )
-        assert len(w) == 1, f"Expected exactly one warning, got {len(w)}"
-    _pass("test_apply_adjoint_sensitivity_warns_on_none")
+        _fail("test_apply_adjoint_sensitivity_raises_on_none", "expected ValueError")
+    except ValueError:
+        _pass("test_apply_adjoint_sensitivity_raises_on_none")
 
 
 def test_apply_adjoint_sensitivity_updates_symmetric_component():
@@ -177,7 +180,9 @@ def test_apply_adjoint_sensitivity_updates_symmetric_component():
     sensitivity = np.array([5.0])
     apply_adjoint_sensitivity_symmetric(
         {"main_body": phi}, sensitivity, _FakeMesh(), dt=1e-6,
-        gradient_weights={"aero": 1.0, "mass": 0.0, "com": 0.0, "mfg": 0.0},
+        # K-3 fix: strict key names w_aero/w_mass/w_com/w_mfg (was
+        # aero/mass/com/mfg, silently discarded via .get()-with-default).
+        gradient_weights={"w_aero": 1.0, "w_mass": 0.0, "w_com": 0.0, "w_mfg": 0.0},
     )
     assert not np.array_equal(phi.grid, grid_before), "Symmetric component grid should change"
     _pass("test_apply_adjoint_sensitivity_updates_symmetric_component")
@@ -195,6 +200,6 @@ if __name__ == "__main__":
     test_splat_vertex_sensitivity_places_value_in_correct_cell()
     test_splat_vertex_sensitivity_averages_multiple_hits()
     test_apply_adjoint_sensitivity_mismatched_lengths_raises()
-    test_apply_adjoint_sensitivity_warns_on_none()
+    test_apply_adjoint_sensitivity_raises_on_none()
     test_apply_adjoint_sensitivity_updates_symmetric_component()
     print("\nAll phi_updater tests passed.")

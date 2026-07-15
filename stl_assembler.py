@@ -69,7 +69,16 @@ def assemble_stl(
     trimesh.repair.fix_normals(full_car)
 
     if not full_car.is_watertight:
-        trimesh.repair.fill_holes(full_car)
+        # use_fan=True (2026-07-15 fix): trimesh.repair.fill_holes defaults to
+        # use_fan=False, which -- per its own docstring -- only triangulates
+        # holes "larger than quads" when fanned; with the default it silently
+        # leaves any hole bigger than a quad open and returns False. Every
+        # real attachment-face interface (nose/sidepod/rearpod) is a full
+        # cross-section boundary loop with dozens+ edges, so the unqualified
+        # call never actually closed them -- verified live: a 112-edge nose
+        # attachment loop was left fully open (0 faces added) without
+        # use_fan, and closed cleanly (is_watertight -> True) with it.
+        trimesh.repair.fill_holes(full_car, use_fan=True)
         if not full_car.is_watertight:
             from surface_extraction import MeshQualityFailure
             raise MeshQualityFailure("Full car assembly is not watertight.")
@@ -86,16 +95,26 @@ def assemble_stl(
     # results from slicing the entire assembled car).
     half_parts = []
 
+    # Slicing exactly at y=0 (2026-07-15 fix): a plane through y=0 exactly
+    # can pass exactly through a marching-cubes vertex row when the mesh is
+    # y-symmetric-ish, which makes slice_mesh_plane's capping produce a
+    # degenerate sliver hole (verified live: 3 leftover open edges forming
+    # a near-zero-area triangle that survived fill_holes, merge_vertices,
+    # and repeated repair passes). Offsetting the cut plane by 0.1 micron
+    # (physically negligible, far below manufacturing tolerance) avoids the
+    # exact-vertex-on-plane degeneracy and closes it cleanly.
+    _SLICE_Y_EPS_M = 1e-7
+
     for name in ("nose", "sidepod", "rearpod", "main_body"):
         mesh = meshes[name]
         try:
             sliced = trimesh.intersections.slice_mesh_plane(
                 mesh,
                 plane_normal=(0, 1, 0),
-                plane_origin=(0, 0, 0),
+                plane_origin=(0, _SLICE_Y_EPS_M, 0),
                 cap=True,
             )
-            trimesh.repair.fill_holes(sliced)
+            trimesh.repair.fill_holes(sliced, use_fan=True)
             trimesh.repair.fix_normals(sliced)
             half_parts.append(sliced)
         except Exception:
@@ -116,7 +135,7 @@ def assemble_stl(
     trimesh.repair.fix_normals(right_half)
 
     if not right_half.is_watertight:
-        trimesh.repair.fill_holes(right_half)
+        trimesh.repair.fill_holes(right_half, use_fan=True)
         trimesh.repair.fix_normals(right_half)
         if not right_half.is_watertight:
             from surface_extraction import MeshQualityFailure

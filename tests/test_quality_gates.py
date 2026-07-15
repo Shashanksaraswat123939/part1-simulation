@@ -13,23 +13,60 @@ from bounding_volumes import BoundingRegion
 def _pass(n): print(f"PASS {n}")
 def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
 
-def _make_phi(component="main_body", nx=30, ny=30, nz=30):
-    bv = BoundingRegion(component, (0.0, -0.0045, 0.0), (nx, ny, nz))
-    solid = np.zeros((nx, ny, nz), dtype=bool)
-    air = np.zeros((nx, ny, nz), dtype=bool)
-    air[0, :, :] = True; air[-1, :, :] = True
-    air[:, 0, :] = True; air[:, -1, :] = True
-    air[:, :, 0] = True; air[:, :, -1] = True
-    phi = PhiGrid(component, bv, np.zeros((nx,ny,nz), dtype=np.float32), solid, air)
-    phi.init("sphere")
+def _rounded_box_grid(shape, round_r=5.0, margin=1.0):
+    """Uniformly edge-rounded box SDF (Inigo Quilez rounded-box formula).
+
+    Used for the nose only: its 2mm wall-thickness gate needs rounded
+    edges/corners to pass (sharp box corners always register as locally
+    "thin" under the correct morphological-opening thickness test,
+    regardless of overall box size -- verified live, 2026-07-15), and its
+    curvature is small enough after the surface_extraction._repair_mesh
+    Taubin-smoothing fix (2026-07-15) to still clear the mesh-quality gate.
+    """
+    nx, ny, nz = shape
+    cx, cy, cz = (nx - 1) / 2.0, (ny - 1) / 2.0, (nz - 1) / 2.0
+    hx = max((nx - 1) / 2.0 - margin - round_r, 0.5)
+    hy = max((ny - 1) / 2.0 - margin - round_r, 0.5)
+    hz = max((nz - 1) / 2.0 - margin - round_r, 0.5)
+    i, j, k = np.indices(shape).astype(np.float64)
+    qx = np.abs(i - cx) - hx
+    qy = np.abs(j - cy) - hy
+    qz = np.abs(k - cz) - hz
+    qx0, qy0, qz0 = np.maximum(qx, 0), np.maximum(qy, 0), np.maximum(qz, 0)
+    outside = np.sqrt(qx0 ** 2 + qy0 ** 2 + qz0 ** 2)
+    inside = np.minimum(np.maximum(qx, np.maximum(qy, qz)), 0)
+    d = outside + inside - round_r
+    from geometry_contract import GRID_SPACING_M
+    return (d * GRID_SPACING_M).astype(np.float32)
+
+
+def _make_phi(component, shape):
+    """Milled components (sidepod/rearpod/main_body): a box filling the
+    entire valid region (flush to every boundary) reliably clears the
+    tool-accessibility gate -- every face is boundary-coincident and thus
+    exempted by the boundary-face exemption (Option A), regardless of
+    whether TOOL_DIRECTIONS covers that face's normal (verified live,
+    2026-07-15). Nose: see _rounded_box_grid."""
+    from geometry_contract import GRID_SPACING_M
+    attachment_faces = {
+        "nose": ["rear"], "sidepod": ["inner_y"], "rearpod": ["rear"], "main_body": [],
+    }[component]
+    bv = BoundingRegion(component, (0.0, -0.0045, 0.0015), shape)
+    solid, air = PhiGrid.build_hard_masks(bv, [], attachment_faces)
+    if component == "nose":
+        grid = _rounded_box_grid(shape)
+    else:
+        grid = np.full(shape, -GRID_SPACING_M, dtype=np.float32)
+    phi = PhiGrid(component, bv, grid, solid, air)
+    phi.apply_hard_constraints()
     return phi
 
 def _make_all_phi():
     return {
-        "nose":      _make_phi("nose", 15, 30, 30),
-        "sidepod":   _make_phi("sidepod", 30, 15, 30),
-        "rearpod":   _make_phi("rearpod", 15, 30, 30),
-        "main_body": _make_phi("main_body", 40, 30, 30),
+        "nose":      _make_phi("nose", (30, 30, 30)),
+        "sidepod":   _make_phi("sidepod", (30, 30, 30)),
+        "rearpod":   _make_phi("rearpod", (30, 30, 30)),
+        "main_body": _make_phi("main_body", (40, 30, 30)),
     }
 
 def test_gate_result_validates_lifecycle_state():

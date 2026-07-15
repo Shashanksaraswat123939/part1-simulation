@@ -309,9 +309,10 @@ def compute_bounding_volumes(
     if rule_envelope is None:
         raise NotImplementedError(
             "! UNRESOLVED U6: UAE competition regulation envelope dimensions not provided. "
-            "Create a RuleEnvelope object with y_body_half_m, y_sidepod_inner_m, "
-            "y_sidepod_outer_m, z_floor_m, z_nose_top_m, z_sidepod_top_m, "
-            "z_rearpod_top_m, z_body_top_m, rearpod_max_length_m --- all in metres."
+            "Create a RuleEnvelope object with y_body_half_m, y_nose_half_m, "
+            "y_sidepod_inner_m, y_sidepod_outer_m, z_floor_m, z_nose_top_m, "
+            "z_sidepod_top_m, z_rearpod_top_m, z_body_top_m, "
+            "rearpod_max_length_m --- all in metres."
         )
 
     W_m = mm_to_m(W_mm)
@@ -339,15 +340,19 @@ def compute_bounding_volumes(
 
     # ?? Nose volume ????????????????????????????????????????????????????????
     # x: from 0 (nose tip) to Ref Plane A (x_front - 16 mm)
-    # y: from -y_body_half to +y_body_half
+    # y: from -y_nose_half to +y_nose_half (T8.5.1: nose/wing support must be
+    #    no wider than 15mm either side of centreline -- TIGHTER than the
+    #    general y_body_half_m used elsewhere. Using y_body_half_m here was a
+    #    real compliance gap: it let the optimizer place nose material out to
+    #    +-28mm, nearly double the legal +-15mm limit for this region.)
     # z: from z_floor to z_nose_top
     nose_length_mm = max(0.3, (x_front_mm - 16.0))   # Ref Plane A from nose tip
     nose_nx = grid_cells(nose_length_mm)              # at least 1
-    nose_ny = grid_cells((re.y_body_half_m * 2) * 1000)
+    nose_ny = grid_cells((re.y_nose_half_m * 2) * 1000)
     nose_nz = grid_cells((re.z_nose_top_m - re.z_floor_m) * 1000)
     nose = BoundingRegion(
         component    = "nose",
-        origin_m     = (0.0, -re.y_body_half_m, re.z_floor_m),
+        origin_m     = (0.0, -re.y_nose_half_m, re.z_floor_m),
         shape        = (nose_nx, nose_ny, nose_nz),
         polygon_yz_m = None,
         voxel_mask   = None,
@@ -456,6 +461,7 @@ class RuleEnvelope:
     versus design choices made within a legal range (no exact value given).
     """
     y_body_half_m:       float   # Half-width of car body in y (e.g. 0.030 m = 30 mm)
+    y_nose_half_m:        float  # Half-width of the nose region (T8.5.1 -- tighter than y_body_half_m)
     y_sidepod_inner_m:   float   # Inner y-edge of sidepod corridor (outer edge of body)
     y_sidepod_outer_m:   float   # Outer y-edge of sidepod
     z_floor_m:           float   # Bottom of all components (usually 0.0 m = track surface)
@@ -476,6 +482,16 @@ def default_rule_envelope() -> "RuleEnvelope":
                               it let the optimizer place material AT track level,
                               which is illegal.)
       z_nose_top_m          = 0.025 m  -- T8.5.1 nose/wing support max height 25mm.
+      y_nose_half_m         = 0.015 m  -- T8.5.1 "no wider than 15mm either side of the
+                              centre line reference plane" for the nose and front wing
+                              support structure. Was MISSING entirely until this pass --
+                              the nose region previously used y_body_half_m (28mm), which
+                              is nearly double the legal 15mm limit for this specific
+                              region. Verified against the regulation text directly
+                              (2026-07-14): "The nose and front wing support structure
+                              must be in front of reference plane A, no more than 25.0mm
+                              above the track surface and no wider than 15mm either side
+                              of the centre line reference plane." (T8.5.1).
       rearpod_max_length_m  = 0.040 m  -- T9.4.2 rear overhang max 40mm from Ref Plane B.
       z_rearpod_top_m       = 0.065 m  -- T9.4.3 rear overhang max height 65mm
                               (equals T3.5's overall car height ceiling; no
@@ -509,6 +525,7 @@ def default_rule_envelope() -> "RuleEnvelope":
     """
     return RuleEnvelope(
         y_body_half_m=0.028,
+        y_nose_half_m=0.015,
         y_sidepod_inner_m=0.028,
         y_sidepod_outer_m=0.0325,
         z_floor_m=0.0015,

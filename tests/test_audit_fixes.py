@@ -113,24 +113,90 @@ def test_B3_mesh_quality_checks_triangle_angles():
 # ── D1: small grid extraction succeeds (not geometry_rejected) ───────────
 
 def test_D1_small_grid_extraction_succeeds():
-    """30^3 sphere phi grid must extract a surface successfully (was always failing)."""
+    """30^3 grid phi must extract a surface successfully (was always failing).
+
+    Uses a flat slab (full x/z extent, inset only in y) instead of a bare
+    sphere: a curved shape at this coarse a resolution reliably produces
+    marching-cubes sliver triangles regardless of decimation tuning (verified
+    live, 2026-07-14 -- tried spheres at 6 different resolutions, all failed),
+    and a shape whose solid reaches the grid's x-boundary always has some
+    surface with a normal main_body's TOOL_DIRECTIONS ({+Z,+Y,-Y}, no +-X)
+    can't reach -- which the boundary-face exemption (Option A) fixes only
+    for genuinely boundary-coincident faces, not a sphere's naturally-curved
+    polar cap sitting inside the grid. A flat slab has neither problem: no
+    curvature (no slivers), and every exposed face is either a +-Y side wall
+    (directly covered) or an x/z boundary cap (exempted)."""
     from surface_extraction import extract_surface
-    phi = _make_phi(shape=(30, 30, 30))
+    from bounding_volumes import BoundingRegion
+    from phi_grid import PhiGrid
+    from geometry_contract import GRID_SPACING_M
+    shape = (30, 30, 30)
+    bv = BoundingRegion("main_body", (0.0, -0.0045, 0.0), shape)
+    solid = np.zeros(shape, dtype=bool)
+    air = np.zeros(shape, dtype=bool)
+    air[0,:,:]=True; air[-1,:,:]=True
+    air[:,0,:]=True; air[:,-1,:]=True
+    air[:,:,0]=True; air[:,:,-1]=True
+    phi = PhiGrid("main_body", bv, np.zeros(shape, dtype=np.float32), solid, air)
+    margin_y = 6
+    jj = np.arange(shape[1])
+    dist_y = np.minimum(jj - margin_y, (shape[1]-1-margin_y) - jj).astype(np.float32)
+    slice1d = -dist_y * GRID_SPACING_M
+    phi.grid = np.broadcast_to(slice1d[None,:,None], shape).astype(np.float32).copy()
+    phi.apply_hard_constraints()
+
     mesh = extract_surface(phi)
     assert len(mesh.faces) > 100, f"Too few faces: {len(mesh.faces)}"
     _pass("test_D1_small_grid_extraction_succeeds")
 
 def test_D1_attachment_face_open_boundary_accepted():
-    """Nose component (attachment face) must not be rejected for its open boundary."""
+    """Nose component (attachment face) must not be rejected for its open
+    boundary.
+
+    Uses a uniformly edge-rounded box (Inigo Quilez rounded-box SDF, corner
+    radius 5 cells = 1.5mm), not a sharp box and not phi.init("sphere"):
+
+    - A sharp box (any inset margin, even flush to the domain) reliably
+      trips the nose's 2mm wall-thickness gate at its 4 long edges --
+      verified live, 2026-07-15: sharp-box edges/corners have less local
+      inscribed-ball coverage than flat faces under the (correct)
+      morphological-opening thickness test, regardless of overall box size
+      (margin 4 -> 832 thin cells, margin 2 -> 684; shrinking, not zeroing).
+      Uniformly rounding all 12 edges/corners with radius >= the check's own
+      radius (1mm) eliminates this while keeping most faces flat.
+    - A bare sphere additionally fails mesh quality: marching cubes on
+      curved surfaces produces sliver triangles (min angle ~2-3 deg)
+      regardless of resolution or quadric-decimation tuning (verified live,
+      2026-07-14/15). Root-caused 2026-07-15 to be an intrinsic
+      edge-interpolation artifact (not near-duplicate vertices -- merge at
+      any tolerance made no difference); fixed generally in
+      surface_extraction._repair_mesh via volume-preserving Taubin
+      smoothing, which raised min angle to 16-20+ deg at <0.5% volume
+      change. This test's rounded box exercises that fix too."""
     from bounding_volumes import BoundingRegion
     from phi_grid import PhiGrid
     from surface_extraction import extract_surface
+    from geometry_contract import GRID_SPACING_M
+    shape = (30, 30, 30)
+    nx, ny, nz = shape
     # Nose has 'rear' attachment strip
-    bv = BoundingRegion("nose", (0.0, -0.0045, 0.0), (30, 30, 30))
+    bv = BoundingRegion("nose", (0.0, -0.0045, 0.0), shape)
     solid, air = PhiGrid.build_hard_masks(bv, [], ["rear"])
-    grid = np.zeros((30, 30, 30), dtype=np.float32)
-    phi = PhiGrid("nose", bv, grid, solid, air)
-    phi.init("sphere")
+    r = 5.0  # edge-rounding radius in cells (1.5mm), > wall-thickness radius (1mm)
+    cx, cy, cz = (nx - 1) / 2.0, (ny - 1) / 2.0, (nz - 1) / 2.0
+    hx = (nx - 1) / 2.0 - 1.0 - r
+    hy = (ny - 1) / 2.0 - 1.0 - r
+    hz = (nz - 1) / 2.0 - 1.0 - r
+    i, j, k = np.indices(shape).astype(np.float64)
+    qx = np.abs(i - cx) - hx
+    qy = np.abs(j - cy) - hy
+    qz = np.abs(k - cz) - hz
+    qx0, qy0, qz0 = np.maximum(qx, 0), np.maximum(qy, 0), np.maximum(qz, 0)
+    outside = np.sqrt(qx0 ** 2 + qy0 ** 2 + qz0 ** 2)
+    inside = np.minimum(np.maximum(qx, np.maximum(qy, qz)), 0)
+    dist = outside + inside - r
+    phi = PhiGrid("nose", bv, (dist * GRID_SPACING_M).astype(np.float32), solid, air)
+    phi.apply_hard_constraints()
     mesh = extract_surface(phi)
     assert mesh is not None
     _pass("test_D1_attachment_face_open_boundary_accepted")
@@ -220,25 +286,30 @@ def test_D6_adjoint_sensitivity_updates_phi():
 
     apply_adjoint_sensitivity_symmetric(
         phi_grids, sensitivity, right_mesh, dt=1e-5,
-        gradient_weights={"aero": 1.0, "mass": 0.0, "com": 0.0, "mfg": 0.0}
+        # K-3 fix: strict key names w_aero/w_mass/w_com/w_mfg (was
+        # aero/mass/com/mfg, silently discarded via .get()-with-default).
+        gradient_weights={"w_aero": 1.0, "w_mass": 0.0, "w_com": 0.0, "w_mfg": 0.0}
     )
     # phi must have changed (not identical to before)
     assert not np.allclose(phi.grid, grid_before), \
         "phi grid unchanged after adjoint update — sensitivity was not applied"
     _pass("test_D6_adjoint_sensitivity_updates_phi")
 
-def test_D6_adjoint_none_mesh_warns_not_silently_skips():
-    """apply_adjoint_sensitivity_symmetric with None mesh must warn, not silently skip."""
+def test_D6_adjoint_none_mesh_raises_not_silently_skips():
+    """apply_adjoint_sensitivity_symmetric with None mesh must raise, not
+    silently skip. P1-13 fix: a silent skip meant DeltaT=0 -> false
+    convergence in the optimizer loop, so this was upgraded from a warning
+    to a ValueError."""
     from phi_updater import apply_adjoint_sensitivity_symmetric
     phi = _make_phi(shape=(15, 15, 15))
     phi_grids = {"main_body": phi}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
+    try:
         apply_adjoint_sensitivity_symmetric(
             phi_grids, None, None, dt=0.001, gradient_weights={}
         )
-        assert len(w) >= 1, "Expected a warning when mesh=None, got none"
-    _pass("test_D6_adjoint_none_mesh_warns_not_silently_skips")
+        _fail("test_D6_adjoint_none_mesh_raises_not_silently_skips", "expected ValueError")
+    except ValueError:
+        _pass("test_D6_adjoint_none_mesh_raises_not_silently_skips")
 
 
 # ── D7: requirements.txt exists and lists all deps ────────────────────────
@@ -300,6 +371,107 @@ def test_D8_stl_assembler_raises_on_non_watertight_half():
 
 # ── D9: ComponentMassCOM uses Part 2 type when available ─────────────────
 
+# ── Nose wall-thickness gate (2mm min, 3D-printed, may be hollow) ─────────
+
+def test_wall_thickness_rejects_thin_slab_accepts_thick_slab():
+    """Regression: an earlier version of _check_wall_thickness used
+    min(2 x distance-transform) over all solid voxels directly, which is
+    always dominated by boundary-adjacent voxels (EDT ~= 1 grid cell
+    everywhere a surface exists) regardless of the true bulk thickness --
+    caught live by testing a 1mm slab against a 3mm slab and getting the
+    identical (wrong) reported thickness for both. Fixed via a proper
+    morphological-opening test. NOSE_MIN_WALL_THICKNESS_MM is 2.0."""
+    from surface_extraction import _check_wall_thickness, WallThicknessViolation
+    from bounding_volumes import BoundingRegion
+    from phi_grid import PhiGrid
+
+    def _slab_phi(thickness_mm):
+        n_cells = int(round(thickness_mm / 0.3))
+        shape = (10, max(n_cells + 4, 6), 10)
+        bv = BoundingRegion("nose", (0, 0, 0), shape)
+        grid = np.ones(shape, dtype=np.float32)
+        grid[:, 2:2 + n_cells, :] = -1.0
+        # hard_mask_solid = no attachment-strip interface (empty), not the
+        # whole solid slab -- the wall-thickness check exempts
+        # hard_mask_solid cells (2026-07-15 fix), so setting it to the full
+        # solid region here would make the check a no-op.
+        hard_mask_solid = np.zeros(shape, dtype=bool)
+        hard_mask_air = np.zeros(shape, dtype=bool)
+        return PhiGrid("nose", bv, grid, hard_mask_solid, hard_mask_air)
+
+    try:
+        _check_wall_thickness(_slab_phi(1.0))
+        _fail("test_wall_thickness_rejects_thin_slab_accepts_thick_slab",
+              "1mm slab (< 2mm threshold) should have raised WallThicknessViolation")
+    except WallThicknessViolation:
+        pass
+
+    try:
+        _check_wall_thickness(_slab_phi(3.0))
+    except WallThicknessViolation as e:
+        _fail("test_wall_thickness_rejects_thin_slab_accepts_thick_slab",
+              f"3mm slab (> 2mm threshold) should NOT have raised: {e}")
+
+    _pass("test_wall_thickness_rejects_thin_slab_accepts_thick_slab")
+
+
+def test_wall_thickness_skipped_for_milled_components():
+    """The wall-thickness gate is nose-only; milled components use the
+    radius check instead and must never raise WallThicknessViolation."""
+    from surface_extraction import _check_wall_thickness
+    for comp in ("sidepod", "rearpod", "main_body"):
+        phi = _make_phi(comp=comp, shape=(15, 15, 15))
+        _check_wall_thickness(phi)  # must be a silent no-op, never raise
+    _pass("test_wall_thickness_skipped_for_milled_components")
+
+
+def test_wall_thickness_repair_loop_fixes_localized_thin_spot():
+    """extract_surface must actively repair a localized nose wall-thickness
+    violation, not just fail immediately (2026-07-16 fix -- previously the
+    nose had no repair loop at all here, unlike milled components' radius
+    violations, which already got a smooth-and-retry loop).
+
+    Base shape is the uniformly-rounded box already known to pass cleanly
+    (round_r=5, zero thin cells -- see test_D1_attachment_face_open_boundary_
+    accepted), with one small local air 'dent' carved into a flat face to
+    simulate an isolated pinch point an evolved shape might develop. This
+    must be fixed by _thicken_phi_at_thin_walls's repair loop, not just
+    raise -- verified live: 104 thin cells before extract_surface, 0 after."""
+    from bounding_volumes import BoundingRegion
+    from phi_grid import PhiGrid
+    from surface_extraction import extract_surface, _thin_wall_mask
+    from geometry_contract import GRID_SPACING_M, NOSE_MIN_WALL_THICKNESS_M
+
+    shape = (30, 30, 30)
+    nx, ny, nz = shape
+    bv = BoundingRegion("nose", (0.0, -0.0045, 0.0015), shape)
+    solid, air = PhiGrid.build_hard_masks(bv, [], ["rear"])
+
+    r = 5.0
+    cx, cy, cz = (nx - 1) / 2.0, (ny - 1) / 2.0, (nz - 1) / 2.0
+    hx, hy, hz = (nx - 1) / 2.0 - 1.0 - r, (ny - 1) / 2.0 - 1.0 - r, (nz - 1) / 2.0 - 1.0 - r
+    i, j, k = np.indices(shape).astype(np.float64)
+    qx, qy, qz = np.abs(i - cx) - hx, np.abs(j - cy) - hy, np.abs(k - cz) - hz
+    qx0, qy0, qz0 = np.maximum(qx, 0), np.maximum(qy, 0), np.maximum(qz, 0)
+    outside = np.sqrt(qx0 ** 2 + qy0 ** 2 + qz0 ** 2)
+    inside = np.minimum(np.maximum(qx, np.maximum(qy, qz)), 0)
+    grid = outside + inside - r
+
+    dent_dist = np.sqrt((i - 15) ** 2 + (j - 24) ** 2 + (k - 15) ** 2)
+    dent_sdf = (3.0 - dent_dist)  # positive (air) inside the dent sphere
+    grid = np.maximum(grid, dent_sdf) * GRID_SPACING_M
+
+    phi = PhiGrid("nose", bv, grid.astype(np.float32), solid, air)
+    phi.apply_hard_constraints()
+
+    thin_before = _thin_wall_mask(phi, NOSE_MIN_WALL_THICKNESS_M) & ~phi.hard_mask_solid
+    assert thin_before.sum() > 0, "test setup should start with a real violation"
+
+    mesh = extract_surface(phi)  # must repair and succeed, not raise
+    assert mesh is not None
+    _pass("test_wall_thickness_repair_loop_fixes_localized_thin_spot")
+
+
 def test_D9_component_mass_com_import_source():
     """mass_com_calculator must try to import ComponentMassCOM from Part 2."""
     import mass_com_calculator as mc
@@ -347,9 +519,12 @@ if __name__ == "__main__":
     test_D4_velocity_extension_propagates_from_source()
     test_D4_velocity_extension_no_division_errors()
     test_D6_adjoint_sensitivity_updates_phi()
-    test_D6_adjoint_none_mesh_warns_not_silently_skips()
+    test_D6_adjoint_none_mesh_raises_not_silently_skips()
     test_D7_requirements_txt_exists()
     test_D8_stl_assembler_raises_on_non_watertight_half()
+    test_wall_thickness_rejects_thin_slab_accepts_thick_slab()
+    test_wall_thickness_skipped_for_milled_components()
+    test_wall_thickness_repair_loop_fixes_localized_thin_spot()
     test_D9_component_mass_com_import_source()
     test_E1_no_hardcoded_absolute_path()
     print("\nAll audit-fix tests passed.")

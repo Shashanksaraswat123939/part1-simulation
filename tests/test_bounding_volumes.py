@@ -11,7 +11,7 @@ from bounding_volumes import (
     BoundingRegion, BoundingVolumes, RuleEnvelope, compute_bounding_volumes,
     _point_in_polygon_vectorised, default_rule_envelope,
 )
-from geometry_contract import R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m
+from geometry_contract import GRID_SPACING_M, R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m
 import numpy as np
 from dataclasses import dataclass
 
@@ -81,6 +81,25 @@ def test_nose_origin_at_zero():
     bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 50.0, *_make_cylinders(130.0), STUB_RE)
     assert bv.nose.origin_m[0] == 0.0, f"Nose origin x={bv.nose.origin_m[0]}, expected 0.0"
     _pass("test_nose_origin_at_zero")
+
+def test_nose_width_matches_T8_5_1_not_general_body_width():
+    """T8.5.1: nose/wing support must be no wider than 15mm either side of
+    centreline -- tighter than the general y_body_half_m (28mm) used for
+    main_body/rearpod/sidepod. Regression for a real compliance gap found
+    2026-07-14: the nose region previously used y_body_half_m, letting the
+    optimizer place nose material out to +-28mm, nearly double the legal
+    +-15mm limit."""
+    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 50.0, *_make_cylinders(130.0), STUB_RE)
+    assert abs(bv.nose.origin_m[1] - (-0.015)) < 1e-9, \
+        f"nose y origin={bv.nose.origin_m[1]}, expected -0.015 (T8.5.1: 15mm)"
+    nose_width_m = bv.nose.shape[1] * GRID_SPACING_M
+    assert abs(nose_width_m - 0.030) < GRID_SPACING_M, \
+        f"nose total y-width={nose_width_m}m, expected ~0.030m (T8.5.1: 2x15mm)"
+    # main_body/rearpod must still use the general (wider) body half-width --
+    # T8.5.1's tighter cap applies only to the nose/wing-support region.
+    assert bv.main_body.shape[1] > bv.nose.shape[1]
+    _pass("test_nose_width_matches_T8_5_1_not_general_body_width")
+
 
 def test_W_out_of_range_raises():
     for bad_W in [119.9, 140.1, 0.0]:
@@ -202,6 +221,7 @@ if __name__ == "__main__":
     test_sidepod_length_positive_at_W_min()
     test_nose_length_matches_x_front()
     test_nose_origin_at_zero()
+    test_nose_width_matches_T8_5_1_not_general_body_width()
     test_W_out_of_range_raises()
     test_d_halo_out_of_range_raises()
     test_x_front_out_of_range_raises()

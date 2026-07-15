@@ -18,14 +18,30 @@ def _pass(n): print(f"PASS {n}")
 def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
 
 def _make_phi(nx=30, ny=30, nz=30):
-    bv = BoundingRegion("main_body", (0.0, -0.0045, 0.0), (nx, ny, nz))
-    solid = np.zeros((nx, ny, nz), dtype=bool)
-    air = np.zeros((nx, ny, nz), dtype=bool)
+    """A flat slab (full x/z extent, inset only in y), not a bare sphere:
+    a curved shape at this coarse a resolution reliably produces
+    marching-cubes sliver triangles regardless of decimation tuning
+    (verified live, 2026-07-14 -- spheres at 6 different resolutions all
+    failed), and main_body's TOOL_DIRECTIONS ({+Z,+Y,-Y}, no +-X) can never
+    reach a sphere's naturally-curved polar cap. A flat slab has neither
+    problem: no curvature (no slivers), and every exposed face is either a
+    +-Y side wall (directly covered) or an x/z boundary cap (exempted by
+    the boundary-face accessibility exemption)."""
+    from geometry_contract import GRID_SPACING_M
+    shape = (nx, ny, nz)
+    bv = BoundingRegion("main_body", (0.0, -0.0045, 0.0), shape)
+    solid = np.zeros(shape, dtype=bool)
+    air = np.zeros(shape, dtype=bool)
     air[0, :, :] = True; air[-1, :, :] = True
     air[:, 0, :] = True; air[:, -1, :] = True
     air[:, :, 0] = True; air[:, :, -1] = True
-    phi = PhiGrid("main_body", bv, np.zeros((nx,ny,nz), dtype=np.float32), solid, air)
-    phi.init("sphere")
+    phi = PhiGrid("main_body", bv, np.zeros(shape, dtype=np.float32), solid, air)
+    margin_y = 6
+    jj = np.arange(ny)
+    dist_y = np.minimum(jj - margin_y, (ny - 1 - margin_y) - jj).astype(np.float32)
+    slice1d = -dist_y * GRID_SPACING_M
+    phi.grid = np.broadcast_to(slice1d[None, :, None], shape).astype(np.float32).copy()
+    phi.apply_hard_constraints()
     return phi
 
 def test_extract_surface_returns_mesh():

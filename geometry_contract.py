@@ -55,8 +55,19 @@ GRID_SPACING_MM: float = 0.3     # 0.3 mm spacing, Nyquist×10 on 3.15 mm min ra
 GRID_SPACING_M:  float = GRID_SPACING_MM / 1000.0
 
 # ── Machining ──────────────────────────────────────────────────────────────
-MIN_RADIUS_MM: float = 3.15      # minimum machining radius — hard floor
+# Applies to the three MILLED components (sidepod, rearpod, main_body) only.
+# The nose is 3D printed (user-confirmed 2026-07-14), not CNC-milled -- it has
+# no minimum machining radius or tool-direction constraint at all. Instead it
+# has a minimum WALL THICKNESS (a 3D-printing shell constraint, since the nose
+# is allowed to be hollow) -- see NOSE_MIN_WALL_THICKNESS_MM below.
+MIN_RADIUS_MM: float = 3.15      # minimum machining radius — hard floor (milled components only)
 MIN_RADIUS_M:  float = MIN_RADIUS_MM / 1000.0
+
+# 3D-printing shell constraint for the nose only. The nose may be hollow
+# (user-confirmed) but any solid wall must be at least this thick everywhere
+# to print reliably.
+NOSE_MIN_WALL_THICKNESS_MM: float = 2.0
+NOSE_MIN_WALL_THICKNESS_M:  float = NOSE_MIN_WALL_THICKNESS_MM / 1000.0
 
 # ── Densities (kg/m^3) ────────────────────────────────────────────────────
 DENSITY_NOSE_KGM3:    float = 1000.0  # 1.0 g/cm^3 — 6x denser than body material
@@ -134,13 +145,11 @@ ALLOWED_LIFECYCLE_STATES: frozenset[str] = frozenset({
 })
 
 # ── Tool directions per component ──────────────────────────────────────────
+# No entry for "nose": it is 3D printed (user-confirmed 2026-07-14), not
+# CNC-milled, so it has no directional tool-access constraint at all.
+# surface_extraction._check_accessibility already treats a missing/empty
+# entry as "no constraint" (returns 0.0 inaccessible area).
 TOOL_DIRECTIONS: dict[str, list[tuple[float, float, float]]] = {
-    "nose": [
-        (-1.0,  0.0,  0.0),
-        ( 0.0,  0.0,  1.0),
-        ( 0.0,  1.0,  0.0),
-        ( 0.0, -1.0,  0.0),
-    ],
     "sidepod": [
         ( 0.0,  1.0,  0.0),
         (-1.0,  0.0,  0.0),
