@@ -8,8 +8,12 @@ import numpy as np
 from fixed_hardware import (
     ForbiddenCylinder, _build_cylinder_void_mask, _build_box_void_mask,
     _validate_halo_position, HaloGeometry, _assert_com_in_range,
+    WheelDiscZone, _build_wheel_disc_void_mask, _build_four_wheel_zones,
 )
-from geometry_contract import R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m
+from geometry_contract import (
+    R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m,
+    WHEEL_WIDTH_M, FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M,
+)
 
 def _pass(n): print(f"PASS {n}")
 def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
@@ -67,6 +71,71 @@ def test_cylinder_void_mask_centre_is_true():
     ck = max(0, min(ck, shape[2]-1))
     assert mask[ci, cj, ck], "Axle centre cell should be in void mask"
     _pass("test_cylinder_void_mask_centre_is_true")
+
+def test_wheel_disc_zone_contains_point_at_real_wheel_position():
+    """A wheel disc's clearance zone must actually cover the wheel's real
+    lateral position (y=19.25-36.5mm for front), not the centreline."""
+    r = R_WHEEL_M + WHEEL_CLEARANCE_M
+    zone = WheelDiscZone(
+        x_center_m=0.070, y_min_m=FRONT_WHEEL_INNER_Y_M,
+        y_max_m=FRONT_WHEEL_INNER_Y_M + WHEEL_WIDTH_M,
+        z_center_m=R_WHEEL_M, radius_m=r,
+    )
+    # Point at the wheel's real y-position (inner face + half width), axle x/z.
+    y_mid = FRONT_WHEEL_INNER_Y_M + WHEEL_WIDTH_M / 2.0
+    assert zone.contains_point(0.070, y_mid, R_WHEEL_M)
+    _pass("test_wheel_disc_zone_contains_point_at_real_wheel_position")
+
+def test_wheel_disc_zone_excludes_centreline():
+    """The old bug centred the exclusion zone at y=0; a real wheel does not
+    reach the centreline at all, so y=0 must be OUTSIDE the zone."""
+    r = R_WHEEL_M + WHEEL_CLEARANCE_M
+    zone = WheelDiscZone(
+        x_center_m=0.070, y_min_m=FRONT_WHEEL_INNER_Y_M,
+        y_max_m=FRONT_WHEEL_INNER_Y_M + WHEEL_WIDTH_M,
+        z_center_m=R_WHEEL_M, radius_m=r,
+    )
+    assert not zone.contains_point(0.070, 0.0, R_WHEEL_M)
+    _pass("test_wheel_disc_zone_excludes_centreline")
+
+def test_wheel_disc_zone_excludes_outside_x_z_circle():
+    r = R_WHEEL_M + WHEEL_CLEARANCE_M
+    zone = WheelDiscZone(
+        x_center_m=0.070, y_min_m=FRONT_WHEEL_INNER_Y_M,
+        y_max_m=FRONT_WHEEL_INNER_Y_M + WHEEL_WIDTH_M,
+        z_center_m=R_WHEEL_M, radius_m=r,
+    )
+    y_mid = FRONT_WHEEL_INNER_Y_M + WHEEL_WIDTH_M / 2.0
+    assert not zone.contains_point(0.070 + r + 0.005, y_mid, R_WHEEL_M)  # past disc edge in x
+    _pass("test_wheel_disc_zone_excludes_outside_x_z_circle")
+
+def test_wheel_disc_void_mask_shape():
+    r = R_WHEEL_M + WHEEL_CLEARANCE_M
+    zone = WheelDiscZone(0.070, FRONT_WHEEL_INNER_Y_M, FRONT_WHEEL_INNER_Y_M + WHEEL_WIDTH_M, R_WHEEL_M, r)
+    shape = (400, 300, 100)
+    origin = (0.0, 0.0, 0.0)
+    mask = _build_wheel_disc_void_mask(shape, origin, zone)
+    assert mask.shape == shape
+    assert mask.dtype == bool
+    assert mask.any(), "Wheel disc void mask should carve out some cells"
+    _pass("test_wheel_disc_void_mask_shape")
+
+def test_four_wheel_zones_left_right_symmetric():
+    """front-left and front-right zones must be mirror images about y=0,
+    and neither may include the centreline (regression for the y_center=0 bug)."""
+    r = R_WHEEL_M + WHEEL_CLEARANCE_M
+    zones = _build_four_wheel_zones(x_front_m=0.070, rear_axle_m=0.200, axle_z_m=R_WHEEL_M, radius_m=r)
+    assert len(zones) == 4
+    # _build_four_wheel_zones iterates sign in (+1.0, -1.0) per axle, i.e.
+    # [front_right, front_left, rear_right, rear_left].
+    front_right, front_left, rear_right, rear_left = zones
+    assert front_right.y_min_m > 0.0 and front_left.y_max_m < 0.0
+    assert abs(front_right.y_min_m - (-front_left.y_max_m)) < 1e-12
+    assert abs(front_right.y_max_m - (-front_left.y_min_m)) < 1e-12
+    # Neither wheel reaches the centreline.
+    for z in zones:
+        assert not (z.y_min_m <= 0.0 <= z.y_max_m)
+    _pass("test_four_wheel_zones_left_right_symmetric")
 
 def test_box_void_mask_shape():
     shape = (50, 50, 50)
@@ -132,6 +201,11 @@ if __name__ == "__main__":
     test_cylinder_contains_point_outside()
     test_cylinder_void_mask_shape()
     test_cylinder_void_mask_centre_is_true()
+    test_wheel_disc_zone_contains_point_at_real_wheel_position()
+    test_wheel_disc_zone_excludes_centreline()
+    test_wheel_disc_zone_excludes_outside_x_z_circle()
+    test_wheel_disc_void_mask_shape()
+    test_four_wheel_zones_left_right_symmetric()
     test_box_void_mask_shape()
     test_halo_validation_behind_front_axle()
     test_halo_validation_allows_at_or_before_front_axle()

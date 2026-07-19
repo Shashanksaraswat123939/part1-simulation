@@ -23,7 +23,7 @@ import numpy as np
 
 from geometry_contract import (
     validate_W, validate_x_front, validate_d_halo, mm_to_m, grid_cells,
-    WHEEL_CLEARANCE_M, GRID_SPACING_M,
+    WHEEL_CLEARANCE_M, GRID_SPACING_M, WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
 )
 from wheel_visibility_zones import build_t79_forbidden_mask
 from halo_pocket import build_halo_pocket_forbidden_mask
@@ -276,7 +276,7 @@ def compute_bounding_volumes(
     front_cylinder: "ForbiddenCylinder",
     rear_cylinder: "ForbiddenCylinder",
     rule_envelope: "RuleEnvelope",
-    wheel_x_half_width_mm: float = 8.0,
+    wheel_x_half_width_mm: float = WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
 ) -> BoundingVolumes:
     """
     Compute all four bounding volumes given outer loop scalars and wheel geometry.
@@ -385,13 +385,25 @@ def compute_bounding_volumes(
     )
 
     # ?? Rearpod volume ?????????????????????????????????????????????????????
-    # x: from rear axle (x_front + W) to rear axle + rearpod_max_length
+    # x: from rear-wheel-clear (rear axle + wheel radius/clearance) to
+    #    rear-wheel-clear + rearpod_max_length
     # y: from -y_body_half to +y_body_half
     # z: from z_floor to z_rearpod_top
+    #
+    # Regression fix (sandbox/README.md finding #12 follow-up): this
+    # previously started flush at the rear axle with NO wheel clearance at
+    # all -- unlike the sidepod corridor, which already offset its x_min/
+    # x_max by the wheel's radius+clearance. Measured: the rear wheel disc
+    # itself (not just its mounting bracket) was 54% embedded in rearpod's
+    # territory. wheel_x_half_width_mm is the SAME clearance the T7.9.4
+    # keep-clear rectangle below is anchored to, so the pod's physical
+    # origin now lines up exactly where the wheel's disc footprint ends,
+    # with T7.9.4 carving out its own additional 5mm beyond that.
+    rearpod_x_start_m = rear_axle_m + mm_to_m(wheel_x_half_width_mm)
     rp_x_mm = re.rearpod_max_length_m * 1000
     rp_y_mm = re.y_body_half_m * 2 * 1000
     rp_z_mm = (re.z_rearpod_top_m - re.z_floor_m) * 1000
-    rearpod_origin_m = (rear_axle_m, -re.y_body_half_m, re.z_floor_m)
+    rearpod_origin_m = (rearpod_x_start_m, -re.y_body_half_m, re.z_floor_m)
     rearpod_shape = (
         grid_cells(rp_x_mm),
         grid_cells(rp_y_mm),

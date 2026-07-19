@@ -6,6 +6,7 @@ the full car at y=0 to produce the right-half STL for CFD.
 """
 from __future__ import annotations
 from pathlib import Path
+from typing import Optional
 import numpy as np
 
 
@@ -154,3 +155,39 @@ def assemble_stl(
     right_half.export(str(half_path), file_type="stl_ascii")
 
     return (str(full_path.resolve()), str(half_path.resolve()))
+
+
+def assemble_with_hardware(
+    full_car_stl_path: str,
+    hardware_meshes: dict[str, "trimesh.Trimesh"],
+    candidate_id: str,
+    out_dir: str,
+) -> str:
+    """
+    Concatenate the assembled machined body (from assemble_stl's full-car
+    output) with the real fixed-hardware solids -- wheels, wheel supports,
+    halo, canister (see hardware_geometry.py) -- for visual/legality
+    inspection and CFD surface completeness (sandbox/README.md finding #11:
+    "the STL contains no hardware at all ... CFD drag is being computed on
+    a bare body with no wheels and no halo").
+
+    This is a SEPARATE output from assemble_stl()'s full/half STLs, not a
+    replacement: hardware interpenetrates the body by design (that is what
+    fixed_hardware.py's void masks carve out room for), so the result is a
+    multi-body mesh and intentionally NOT watertight -- correct for a
+    snappyHexMesh multi-surface CFD setup or a visual check, wrong for
+    anything that demands one closed volume. assemble_stl()'s own full/half
+    outputs (which DO enforce watertightness) are untouched by this
+    function and unaffected by calling it.
+    """
+    import trimesh
+
+    body = trimesh.load(full_car_stl_path)
+    combined = trimesh.util.concatenate([body] + list(hardware_meshes.values()))
+
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    combined_path = out_path / f"car_{candidate_id}_with_hardware.stl"
+    combined.export(str(combined_path), file_type="stl_ascii")
+
+    return str(combined_path.resolve())

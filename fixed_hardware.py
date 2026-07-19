@@ -20,6 +20,7 @@ from geometry_contract import (
     HARDWARE_CLEARANCE_M, HALO_MIN_Z_M, mm_to_m,
     R_WHEEL_M, validate_W, validate_x_front,
     COM_Z_LOWER_BOUND_M, COM_Z_UPPER_BOUND_M,
+    WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
 )
 
 @dataclass(frozen=True)
@@ -51,6 +52,33 @@ class ForbiddenCylinder:
         if not (self.x_min_m <= x <= self.x_max_m):
             return False
         r2 = (y - self.y_center_m)**2 + (z - self.z_center_m)**2
+        return r2 <= self.radius_m ** 2
+
+
+@dataclass(frozen=True)
+class WheelDiscZone:
+    """
+    Physical clearance volume for one wheel disc.
+
+    A wheel spins about the LATERAL (y) axis: its circular face lies in the
+    x-z plane, offset out to the wheel's real lateral position -- not
+    centred on the car's centreline. This is what ForbiddenCylinder above
+    got wrong when (mis)used for wheels: that shape is a rod aligned along
+    x, circular in y-z, centred at y=0 -- a different axis and a different
+    location from any real wheel. See sandbox/README.md finding #12.
+
+    All values in metres.
+    """
+    x_center_m: float   # axle position in x
+    y_min_m:    float   # inner (track-contact) face
+    y_max_m:    float   # outer face (y_min_m + wheel width)
+    z_center_m: float   # axle height above track
+    radius_m:   float   # wheel radius + clearance, in the x-z plane
+
+    def contains_point(self, x: float, y: float, z: float) -> bool:
+        if not (self.y_min_m <= y <= self.y_max_m):
+            return False
+        r2 = (x - self.x_center_m) ** 2 + (z - self.z_center_m) ** 2
         return r2 <= self.radius_m ** 2
 
 
@@ -204,6 +232,73 @@ def _build_cylinder_void_mask(
     in_r = r2 <= cylinder.radius_m**2
 
     return (in_x & in_r).astype(bool)
+
+
+def _build_wheel_disc_void_mask(
+    grid_shape: tuple[int, int, int],
+    grid_origin_m: tuple[float, float, float],
+    zone: WheelDiscZone,
+) -> np.ndarray:
+    """
+    Returns bool array shape (nx, ny, nz).
+    True where grid cell centre is inside the wheel disc's clearance volume:
+    circular in the x-z plane (centred on the axle), banded in y (the
+    wheel's width, at its real lateral offset).
+    """
+    nx, ny, nz = grid_shape
+    ox, oy, oz = grid_origin_m
+    dx = GRID_SPACING_M
+
+    xs = ox + np.arange(nx) * dx
+    ys = oy + np.arange(ny) * dx
+    zs = oz + np.arange(nz) * dx
+
+    X = xs[:, np.newaxis, np.newaxis]
+    Y = ys[np.newaxis, :, np.newaxis]
+    Z = zs[np.newaxis, np.newaxis, :]
+
+    in_y = (Y >= zone.y_min_m) & (Y <= zone.y_max_m)
+    r2 = (X - zone.x_center_m) ** 2 + (Z - zone.z_center_m) ** 2
+    in_r = r2 <= zone.radius_m ** 2
+
+    return (in_y & in_r).astype(bool)
+
+
+def _build_four_wheel_zones(
+    x_front_m: float,
+    rear_axle_m: float,
+    axle_z_m: float,
+    radius_m: float,
+) -> list[WheelDiscZone]:
+    """
+    Build the four WheelDiscZones (front-left, front-right, rear-left,
+    rear-right) at their real measured lateral offsets (geometry_contract's
+    FRONT/REAR_WHEEL_INNER_Y_M + WHEEL_WIDTH_M), not the centreline.
+
+    The y-band is widened inward by WHEEL_CLEARANCE_M (the same clearance
+    already applied to the radial x-z direction via `radius_m`) so the
+    wheel's own inner-face boundary isn't a bare, zero-margin edge -- caught
+    live: at coarse grid spacing, real wheel-disc vertices sitting exactly
+    on that boundary rounded onto the solid side of the nearest cell.
+    """
+    from geometry_contract import (
+        WHEEL_WIDTH_M, FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M, WHEEL_CLEARANCE_M,
+    )
+
+    zones = []
+    for x_center_m, inner_y_m in (
+        (x_front_m, FRONT_WHEEL_INNER_Y_M),
+        (rear_axle_m, REAR_WHEEL_INNER_Y_M),
+    ):
+        band_min_m = inner_y_m - WHEEL_CLEARANCE_M
+        band_max_m = inner_y_m + WHEEL_WIDTH_M + WHEEL_CLEARANCE_M
+        for sign in (+1.0, -1.0):
+            if sign > 0:
+                y_min_m, y_max_m = band_min_m, band_max_m
+            else:
+                y_min_m, y_max_m = -band_max_m, -band_min_m
+            zones.append(WheelDiscZone(x_center_m, y_min_m, y_max_m, axle_z_m, radius_m))
+    return zones
 
 
 def _build_polygon_void_mask(
@@ -369,11 +464,21 @@ def place_fixed_hardware(
     _assert_com_in_range("Rear wing", rear_wing_com_m, rear_axle_m)
 
     # ?? Build void masks ??????????????????????????????????????????????????
-    front_axle_mask = _build_cylinder_void_mask(
-        body_grid_shape, body_grid_origin_m, front_cylinder
+    # Wheel discs: circular in x-z, banded in y at their REAL lateral offset
+    # (see WheelDiscZone docstring / geometry_contract's measured constants)
+    # -- not the old centreline-centred cylinder that missed the wheels
+    # entirely. left | right unioned per axle so front_axle_mask/
+    # rear_axle_mask keep their existing shapes/names for callers below.
+    front_left, front_right, rear_left, rear_right = _build_four_wheel_zones(
+        x_front_m, rear_axle_m, axle_z_m, cylinder_radius_m,
     )
-    rear_axle_mask = _build_cylinder_void_mask(
-        body_grid_shape, body_grid_origin_m, rear_cylinder
+    front_axle_mask = (
+        _build_wheel_disc_void_mask(body_grid_shape, body_grid_origin_m, front_left)
+        | _build_wheel_disc_void_mask(body_grid_shape, body_grid_origin_m, front_right)
+    )
+    rear_axle_mask = (
+        _build_wheel_disc_void_mask(body_grid_shape, body_grid_origin_m, rear_left)
+        | _build_wheel_disc_void_mask(body_grid_shape, body_grid_origin_m, rear_right)
     )
 
     # Canister void: simple box around canister COM
@@ -527,7 +632,7 @@ def compute_default_fixed_hardware_inputs(
         "canister_box_half_size_mm": canister_box_half_size_mm,
         "wheel_axle_mass_kg": WHEEL_AXLE_MASS_KG,
         "wheel_axle_com_mm": wheel_axle_com_mm,
-        "wheel_x_half_width_mm": 8.0,
+        "wheel_x_half_width_mm": WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
         "wheel_axle_z_mm": R_WHEEL_M * 1000.0,
         "rear_wing_mass_kg": REAR_WING_MASS_KG,
         "rear_wing_com_mm": rear_wing_com_mm,

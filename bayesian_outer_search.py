@@ -63,6 +63,7 @@ from geometry_contract import (
     calibrate_x_front_bounds, calibrate_d_halo_max_mm,
     validate_W, validate_x_front, validate_d_halo,
     mm_to_m, CO2_MASS_KG, R_WHEEL_M, WHEEL_CLEARANCE_M,
+    WHEEL_X_CLEARANCE_HALF_WIDTH_M,
     PHI_SNAPSHOT_COMPONENT_KEYS,
 )
 from bounding_volumes import RuleEnvelope, BoundingVolumes, compute_bounding_volumes, default_rule_envelope
@@ -71,9 +72,13 @@ from mass_com_calculator import compute_all_machined_components
 from virtual_cargo import find_cargo_placement, build_virtual_cargo_solid_mask
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-# Wheel half-width in x (placeholder — measure physical hardware).
-# Used for ForbiddenCylinder construction. Matches test stubs in test_bounding_volumes.
-WHEEL_X_HALF_WIDTH_M: float = 0.008    # 8 mm
+# Wheel fore-aft (x) clearance half-width, i.e. the wheel's own radius +
+# clearance (a disc's x-extent at any y within its width is its full
+# diameter). Was a separate, arbitrary 8mm guess (~half the size actually
+# needed for a 30mm-diameter wheel) -- now the single geometry_contract
+# constant shared with fixed_hardware.py's wheel-disc void mask, so the
+# sidepod corridor boundary and the actual wheel clearance can't drift apart.
+WHEEL_X_HALF_WIDTH_M: float = WHEEL_X_CLEARANCE_HALF_WIDTH_M
 
 # Axle height above track surface (placeholder).
 AXLE_Z_M: float = R_WHEEL_M            # wheel centre at 15 mm

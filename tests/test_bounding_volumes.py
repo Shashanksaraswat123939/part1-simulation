@@ -46,8 +46,9 @@ def _make_cylinders(W_mm, x_front_mm=DEFAULT_X_FRONT_MM):
     W_m = mm_to_m(W_mm)
     x_front_m = mm_to_m(x_front_mm)
     r = R_WHEEL_M + WHEEL_CLEARANCE_M
-    front = ForbiddenCylinder(x_front_m,        0.0, 0.015, r, 0.008)
-    rear  = ForbiddenCylinder(x_front_m + W_m,  0.0, 0.015, r, 0.008)
+    from geometry_contract import WHEEL_X_CLEARANCE_HALF_WIDTH_M
+    front = ForbiddenCylinder(x_front_m,        0.0, 0.015, r, WHEEL_X_CLEARANCE_HALF_WIDTH_M)
+    rear  = ForbiddenCylinder(x_front_m + W_m,  0.0, 0.015, r, WHEEL_X_CLEARANCE_HALF_WIDTH_M)
     return front, rear
 
 def test_sidepod_length_increases_with_W():
@@ -133,15 +134,21 @@ def test_all_shapes_are_positive_ints():
             assert isinstance(dim, int) and dim > 0, f"{comp} dim={dim}"
     _pass("test_all_shapes_are_positive_ints")
 
-def test_rearpod_origin_x_equals_x_front_plus_W():
-    """Rearpod starts at rear axle = x_front + W in nose-tip coordinates."""
+def test_rearpod_origin_x_clears_rear_wheel():
+    """Rearpod starts at rear axle + wheel clearance (NOT flush at the rear
+    axle -- that was a real bug: the rear wheel disc itself, not just its
+    mounting bracket, was measured 54% embedded in rearpod's territory
+    before this fix, since nothing offset rearpod's leading edge to clear
+    the wheel's physical radius, unlike the sidepod corridor which already
+    did)."""
+    from geometry_contract import WHEEL_X_CLEARANCE_HALF_WIDTH_M
     x_front_mm = DEFAULT_X_FRONT_MM
     bv = compute_bounding_volumes(130.0, x_front_mm, 15.0, *_make_cylinders(130.0), STUB_RE)
-    expected = mm_to_m(x_front_mm + 130.0)
+    expected = mm_to_m(x_front_mm + 130.0) + WHEEL_X_CLEARANCE_HALF_WIDTH_M
     assert abs(bv.rearpod.origin_m[0] - expected) < 1e-9, (
         f"Rearpod origin x={bv.rearpod.origin_m[0]:.6f}, expected {expected:.6f}"
     )
-    _pass("test_rearpod_origin_x_equals_x_front_plus_W")
+    _pass("test_rearpod_origin_x_clears_rear_wheel")
 
 def test_main_body_origin_x_equals_ref_plane_A():
     """Main body starts at Ref Plane A = x_front - 16 mm."""
@@ -226,7 +233,7 @@ if __name__ == "__main__":
     test_d_halo_out_of_range_raises()
     test_x_front_out_of_range_raises()
     test_all_shapes_are_positive_ints()
-    test_rearpod_origin_x_equals_x_front_plus_W()
+    test_rearpod_origin_x_clears_rear_wheel()
     test_main_body_origin_x_equals_ref_plane_A()
     test_sidepod_is_right_half_only()
     test_bounding_volumes_stores_x_front()

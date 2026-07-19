@@ -108,6 +108,35 @@ ATTACHMENT_STRIP_M:    float = ATTACHMENT_STRIP_MM / 1000.0
 HARDWARE_CLEARANCE_MM: float = 1.0
 HARDWARE_CLEARANCE_M:  float = HARDWARE_CLEARANCE_MM / 1000.0
 
+# ── Wheel disc lateral geometry (measured from provided CAD: "front/rear
+# wheel itself.stl" + "Front/Rear Wheel Support.stl", see hardware_geometry.py)
+# ────────────────────────────────────────────────────────────────────────────
+# Fixes sandbox/README.md finding #12: the old wheel exclusion zone was a
+# ForbiddenCylinder aligned along x and centred on y=0 (the centreline) --
+# the wrong axis (a wheel spins about y, its circular face is in the x-z
+# plane) AND nowhere near where the wheels actually sit (y=19-29mm / front,
+# y=16-24mm / rear). Measured, ~50% of the front wheel and ~58% of the rear
+# wheel ended up inside solid bodywork as a result.
+WHEEL_WIDTH_MM: float = 17.25              # measured, front and rear wheels identical
+WHEEL_WIDTH_M:  float = WHEEL_WIDTH_MM / 1000.0
+
+# Inner (track-contact) face y-offset from centreline. Both measured design
+# choices from the CAD -- comfortably above T7.2's legal MINIMUM half-gaps
+# (front 19.0mm, rear 15.0mm); the regs set a floor, not an exact value.
+FRONT_WHEEL_INNER_Y_MM: float = 19.25      # >= T7.2.1 min half-gap 19.0mm
+REAR_WHEEL_INNER_Y_MM:  float = 16.25      # >= T7.2.2 min half-gap 15.0mm
+FRONT_WHEEL_INNER_Y_M:  float = FRONT_WHEEL_INNER_Y_MM / 1000.0
+REAR_WHEEL_INNER_Y_M:   float = REAR_WHEEL_INNER_Y_MM / 1000.0
+
+# Fore-aft (x) clearance radius for both the sidepod corridor boundary and
+# the wheel-disc void mask. A disc's x-extent at any y within its width is
+# its full diameter, so this must derive from the wheel's actual radius
+# (R_WHEEL_M) plus clearance -- not the old separate, arbitrary 8mm
+# "axle hub half-width" guess, which was less than half the size actually
+# needed (30mm-diameter wheel needs >=15mm of radius clearance, not 8mm).
+WHEEL_X_CLEARANCE_HALF_WIDTH_M:  float = R_WHEEL_M + WHEEL_CLEARANCE_M
+WHEEL_X_CLEARANCE_HALF_WIDTH_MM: float = WHEEL_X_CLEARANCE_HALF_WIDTH_M * 1000.0
+
 # ── COM sanity bounds ──────────────────────────────────────────────────────
 COM_Z_LOWER_BOUND_M: float = 0.005
 COM_Z_UPPER_BOUND_M: float = 0.060

@@ -16,3 +16,10 @@ dist/
 build/
 *.stl
 *.npy
+
+# Real fixed-hardware CAD (measured, not generated) -- see hardware_geometry.py
+!hardware_cad/*.stl
+
+# Sandbox scratch output (generated preview STLs/PNGs/npy) -- keep the scripts,
+# not their run artifacts.
+sandbox/out/

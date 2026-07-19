@@ -51,7 +51,10 @@ from fixed_hardware import (
     compute_default_fixed_hardware_inputs,
     place_fixed_hardware,
 )
-from geometry_contract import GRID_SPACING_M, R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m
+from geometry_contract import (
+    GRID_SPACING_M, R_WHEEL_M, WHEEL_CLEARANCE_M, mm_to_m,
+    WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
+)
 from phi_grid import PhiGrid
 
 # Local-grid attachment face per component (see module docstring for why).
@@ -92,7 +95,7 @@ def build_phi_grids_for_candidate(
     x_front_mm: float,
     d_halo_mm: float,
     rule_envelope: Optional[RuleEnvelope] = None,
-    wheel_x_half_width_mm: float = 8.0,
+    wheel_x_half_width_mm: float = WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
     init_mode: str = "sphere",
     seed: int = 42,
     solid_masks: Optional[dict[str, np.ndarray]] = None,
@@ -179,7 +182,7 @@ def warm_start_phi_grids(
     x_front_mm: float,
     d_halo_mm: float,
     rule_envelope: Optional[RuleEnvelope] = None,
-    wheel_x_half_width_mm: float = 8.0,
+    wheel_x_half_width_mm: float = WHEEL_X_CLEARANCE_HALF_WIDTH_MM,
 ) -> tuple[dict[str, PhiGrid], BoundingVolumes]:
     """Warm-start onto a new (W, x_front, d_halo).
 
