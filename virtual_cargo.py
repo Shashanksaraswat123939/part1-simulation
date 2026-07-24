@@ -102,6 +102,21 @@ def find_cargo_placement(
     x_front_m = mm_to_m(x_front_mm)
     W_m = mm_to_m(W_mm)
 
+    # Corridor is T4.2's rule verbatim: "wholly positioned between the front and
+    # rear wheel centre lines".
+    #
+    # NOT narrowed by the wheel keep-clear, deliberately. The cargo TAPERS
+    # (55 mm -> 10 mm), so whether an end clears the wheel column depends on
+    # which end is there, not just on x: measured at W=130/x_front=46/d_halo=20,
+    # flip=False (narrow end rearward) erodes 0% while flip=True (wide end
+    # rearward) erodes 17.8% at the same x_start. A 1-D corridor shrink is
+    # therefore both wrong and over-restrictive -- applying it leaves NO legal
+    # placement at all here, because the halo pocket already covers [50,100] mm.
+    #
+    # The real guard is in unified_phi.build_unified_geometry, which measures
+    # actual mask overlap and REFUSES to build (it used to let
+    # `hard_solid &= ~hard_air` delete the overlap silently). This function still
+    # only screens the halo pocket, which is all it can do without the masks.
     corridor_min = x_front_m
     corridor_max = x_front_m + W_m - length_m
     if corridor_max < corridor_min:

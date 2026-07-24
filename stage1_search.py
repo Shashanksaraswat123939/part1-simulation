@@ -97,6 +97,11 @@ class Stage1Point:
     com_z_m: float
     cargo_x_start_m: float
     cargo_flip: bool
+    # Carried so the Stage-2 handoff is a directly usable build_unified_geometry
+    # placement dict. Without it, scalars_for_stage2 could only emit position and
+    # flip, and every consumer would have to re-derive z_base (z_floor + 1 mm)
+    # itself -- which is exactly how the two drift apart.
+    cargo_z_base_m: float = 0.0
 
     @property
     def unit(self) -> tuple[float, float]:
@@ -115,11 +120,24 @@ class Stage1Result:
     def scalars_for_stage2(self) -> dict:
         """The handoff to Stage 2: chosen wheelbase + wheel position + the cargo
         placement that goes with them. d_halo is intentionally NOT fixed here --
-        Stage 2 sweeps it."""
+        Stage 2 sweeps it.
+
+        `cargo_placement` is shaped EXACTLY as build_unified_geometry's
+        cargo_placement argument, so Stage 2 can pass it straight through. It
+        used to emit only cargo_x_start_m/cargo_flip, which nothing downstream
+        read -- so the placement Stage 1 scored against the real com_x-aware
+        objective was silently discarded and every Stage-2 car rebuilt with the
+        geometric default, making the flip DOF dead.
+        """
         b = self.best
         return {
             "W_mm": b.W_mm, "x_front_mm": b.x_front_mm,
             "cargo_x_start_m": b.cargo_x_start_m, "cargo_flip": b.cargo_flip,
+            "cargo_placement": {
+                "x_start_m": b.cargo_x_start_m,
+                "z_base_m": b.cargo_z_base_m,
+                "flip": b.cargo_flip,
+            },
         }
 
 
@@ -204,6 +222,7 @@ def evaluate_scalars(
         T_proxy=r.race_time, mass_kg=r.mass_kg,
         com_x_m=r.x_com_m, com_z_m=r.h_com_m,
         cargo_x_start_m=placement["x_start_m"], cargo_flip=placement["flip"],
+        cargo_z_base_m=placement.get("z_base_m", z_base_m),
     )
 
 

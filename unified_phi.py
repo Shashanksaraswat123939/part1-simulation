@@ -157,14 +157,21 @@ class UnifiedGeometry:
         return float((xs[-1] - xs[0] + 1) * GRID_SPACING_M * 1000.0)
 
 
-# How much of the T4.2 virtual cargo may be eaten by forced-air regions before
-# the geometry is rejected. Not zero, for a structural reason: the cargo sits on
-# the track-clearance floor, and the one-cell border seal below (hard_air[:,:,0])
-# forces that bottom layer to air so the phi=0 surface always closes. Measured at
-# W=130/x_front=46/d_halo=20: 2.94% eroded, all of it that single 0.3 mm layer.
-# Anything much past that is a real placement clash with a wheel keep-clear,
-# T7.9 zone, cartridge bore or ballast slot, which would leave the mandatory
-# keep-solid volume unfilled.
+# How much of the T4.2 virtual cargo may be eaten by REAL forced-air regions
+# before the geometry is rejected.
+#
+# The one-cell border seal (hard_air[:,:,0] etc., which exists so the phi=0
+# surface always closes) is excluded from this measurement, because the cargo
+# sits on the track-clearance floor and always loses its bottom layer to it.
+# That loss is structural, and crucially it is SPACING-DEPENDENT as a fraction:
+# measured 2.94% at the 0.3 mm production spacing but 17.8% at 3 mm, where the
+# 10 mm-tall wedge is only ~3 cells high. A flat fraction over the raw overlap
+# would therefore pass production and reject every coarse-spacing run --
+# including Stage 1, which evaluates at 2 mm. So we count only overlap with
+# INTERIOR voids: wheel keep-clear, T7.9 zones, cartridge bore, ballast slot.
+# Any of those is a genuine placement clash that leaves the mandatory keep-solid
+# volume unfilled, and find_cargo_placement guards none of them (only the halo
+# pocket).
 CARGO_MAX_ERODED_FRACTION = 0.05
 
 
@@ -500,16 +507,21 @@ def build_unified_geometry(
     # loss BEFORE resolving, and refuse to build a car that doesn't contain the
     # cargo the regs require.
     if with_cargo:
-        requested = int(hard_solid.sum())
-        survived = int((hard_solid & ~hard_air).sum())
-        if requested and (requested - survived) / requested > CARGO_MAX_ERODED_FRACTION:
+        interior = np.ones(region.shape, dtype=bool)
+        interior[0, :, :] = interior[-1, :, :] = False
+        interior[:, 0, :] = interior[:, -1, :] = False
+        interior[:, :, 0] = interior[:, :, -1] = False
+        requested = int((hard_solid & interior).sum())
+        eaten = int((hard_solid & hard_air & interior).sum())
+        if requested and eaten / requested > CARGO_MAX_ERODED_FRACTION:
             raise ValueError(
-                f"virtual cargo (T4.2) is {100 * (requested - survived) / requested:.1f}% "
-                f"eroded by forced-air regions at W={W_mm}, x_front={x_front_mm}, "
-                f"d_halo={d_halo_mm} ({requested - survived}/{requested} cells). "
-                "find_cargo_placement only avoids the halo pocket; this placement "
-                "collides with another void. The car would not contain the "
-                "mandatory cargo volume."
+                f"virtual cargo (T4.2) is {100 * eaten / requested:.1f}% eroded by "
+                f"interior forced-air regions at W={W_mm}, x_front={x_front_mm}, "
+                f"d_halo={d_halo_mm} ({eaten}/{requested} cells, excluding the "
+                "grid border seal). find_cargo_placement only avoids the halo "
+                "pocket; this placement collides with a wheel keep-clear, T7.9 "
+                "zone, cartridge bore or ballast slot. The car would not contain "
+                "the mandatory cargo volume."
             )
     hard_solid &= ~hard_air
 
