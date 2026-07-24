@@ -98,7 +98,7 @@ def test_d_halo_changes_bounding_volumes_end_to_end():
         def x_max_m(self): return self.x_center_m + self.x_half_width_m
 
     STUB_RE = default_rule_envelope()
-    W_mm, x_front_mm = 130.0, 70.0
+    W_mm, x_front_mm = 130.0, 46.0
     front = _StubCyl(mm_to_m(x_front_mm), 0.0, 0.015, 0.017, 0.008)
     rear = _StubCyl(mm_to_m(x_front_mm + W_mm), 0.0, 0.015, 0.017, 0.008)
 

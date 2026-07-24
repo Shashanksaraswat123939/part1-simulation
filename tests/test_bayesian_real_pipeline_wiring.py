@@ -71,9 +71,14 @@ def _make_fake_bindings():
         return 0.001
 
     def run_adjoint(stl_half_path, objective_weight):
-        return np.zeros(3)
+        # AdjointOutcome pairs the sensitivity with the mesh that indexes it.
+        # half_mesh=None is legal only because this fake's update_phi ignores
+        # it -- the real binding loads the STL beside the solve.
+        from pipeline_interface import AdjointOutcome
+        return AdjointOutcome(sensitivity=np.zeros(3), half_mesh=None)
 
-    def update_phi(phi_grids, sensitivity_field, meshes, dt, weights, objective_gradients, mass_report):
+    def update_phi(phi_grids, sensitivity_field, half_mesh, dt, weights,
+                   objective_gradients, mass_report):
         return None
 
     def write_candidate_record(outcome_dict):
@@ -146,7 +151,7 @@ def test_level2_evaluate_real_calls_part3_and_returns_real_T():
         _real_bindings_cache[id(cfg)] = fake_bindings
 
         result = _level2_evaluate(
-            130.0, 64.0, 10.0,
+            130.0, 46.0, 10.0,
             rule_envelope=default_rule_envelope(),
             n_iters=0, output_dir=tmpdir, eval_id=1,
             search_config=cfg,
@@ -190,7 +195,7 @@ def test_level2_evaluate_real_rejects_invalid_geometry_before_part3():
         # d_halo=200mm at W=130 is far outside the legal (placement-derived)
         # range -- must be rejected before ever touching the fake bindings.
         result = _level2_evaluate(
-            130.0, 64.0, 200.0,
+            130.0, 46.0, 200.0,
             rule_envelope=default_rule_envelope(),
             n_iters=0, output_dir=tmpdir, eval_id=2,
             search_config=cfg,
@@ -207,7 +212,7 @@ def test_proxy_path_unaffected_when_search_config_omitted():
     from bounding_volumes import default_rule_envelope
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = _level2_evaluate(130.0, 64.0, 10.0, default_rule_envelope(), 0, tmpdir, 1)
+        result = _level2_evaluate(130.0, 46.0, 10.0, default_rule_envelope(), 0, tmpdir, 1)
         assert result.lifecycle == "valid_simulated"
         assert result.mass_kg > 0.0  # proxy path always computes a real mass from phi grids
     _pass("test_proxy_path_unaffected_when_search_config_omitted")

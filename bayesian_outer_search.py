@@ -64,7 +64,7 @@ from geometry_contract import (
     validate_W, validate_x_front, validate_d_halo,
     mm_to_m, CO2_MASS_KG, R_WHEEL_M, WHEEL_CLEARANCE_M,
     WHEEL_X_CLEARANCE_HALF_WIDTH_M,
-    PHI_SNAPSHOT_COMPONENT_KEYS,
+    PHI_SNAPSHOT_COMPONENT_KEYS, get_density,
 )
 from bounding_volumes import RuleEnvelope, BoundingVolumes, compute_bounding_volumes, default_rule_envelope
 from phi_grid import PhiGrid
@@ -272,6 +272,241 @@ def _make_cylinders(x_front_mm: float, W_mm: float):
 
 # ── Level 2 stub ──────────────────────────────────────────────────────────────
 
+# ── Proxy objective ────────────────────────────────────────────────────────
+# T_proxy = 0.5*(m/0.055) + 0.3*(h_com/0.025) + 0.2*(W/130) + barrier(m)
+#
+# The first three terms are the original proxy. The barrier is new (2026-07-20)
+# and is what makes the proxy OPTIMISABLE rather than degenerate: without it the
+# mass term is unbounded below, so a level set driven by these gradients carves
+# the car away to nothing. T3.6 sets a 48 g floor on the whole car, so the
+# barrier encodes a real regulation rather than an arbitrary stopping point.
+#
+# Still a proxy: it knows nothing about aerodynamics. Use it to check that the
+# search MOVES SENSIBLY, not to pick a design.
+PROXY_MASS_REF_KG: float = 0.055
+PROXY_HCOM_REF_M: float = 0.025
+PROXY_W_MASS: float = 0.5
+PROXY_W_HCOM: float = 0.3
+PROXY_W_WHEELBASE: float = 0.2
+PROXY_MIN_MASS_KG: float = 0.048        # T3.6
+PROXY_MASS_BARRIER_WEIGHT: float = 100.0
+PROXY_HJ_DT: float = 2.0e-5
+
+
+def _proxy_mass_barrier(total_mass_kg: float) -> float:
+    """Steep one-sided penalty below T3.6's 48 g minimum."""
+    if total_mass_kg >= PROXY_MIN_MASS_KG:
+        return 0.0
+    deficit = (PROXY_MIN_MASS_KG - total_mass_kg) / PROXY_MIN_MASS_KG
+    return PROXY_MASS_BARRIER_WEIGHT * deficit ** 2
+
+
+def _proxy_objective_gradients(total_mass_kg: float) -> dict[str, float]:
+    """Exact analytic gradients of T_proxy. No CFD, no finite differences.
+
+    dT/dm    = w_mass/m_ref  - 2*barrier_w*(m_min - m)/m_min^2   (below m_min)
+    dT/dh    = w_hcom/h_ref
+    dT/dx    = 0             (the proxy has no fore-aft COM term)
+
+    The barrier derivative is negative and grows as mass falls, so below 48 g
+    the net dT/dm flips sign and the descent direction pushes material back
+    outward. Equilibrium lands just under 48 g at the default weight.
+    """
+    dT_dmass = PROXY_W_MASS / PROXY_MASS_REF_KG
+    if total_mass_kg < PROXY_MIN_MASS_KG:
+        dT_dmass -= (
+            2.0 * PROXY_MASS_BARRIER_WEIGHT
+            * (PROXY_MIN_MASS_KG - total_mass_kg) / PROXY_MIN_MASS_KG ** 2
+        )
+    return {
+        "dT_dmass": dT_dmass,
+        "dT_dh_com": PROXY_W_HCOM / PROXY_HCOM_REF_M,
+        "dT_dx_com": 0.0,
+    }
+
+
+def _proxy_mass_com_state(
+    phi_grids: dict, fixed_hardware_result, x_front_mm: float
+) -> Optional[dict]:
+    """Current {total_mass_kg, com_x_m, com_z_m} from the live phi grids.
+
+    Returns None if mass/COM cannot be computed, so the caller can stop
+    evolving rather than integrate against a garbage linearisation point.
+    """
+    try:
+        components = compute_all_machined_components(
+            phi_grids["nose"], phi_grids["sidepod"],
+            phi_grids["rearpod"], phi_grids["main_body"],
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    machined = sum(c.mass_kg for c in components)
+    fixed = (
+        CO2_MASS_KG + STUB_WHEEL_AXLE_MASS_KG
+        + STUB_HALO_MASS_KG + STUB_REAR_WING_MASS_KG
+    )
+    total = machined + fixed
+    if total <= 0 or machined <= 0:
+        return None
+    # Fixed hardware sits at its own COM; for the gradient's linearisation
+    # point the machined COM is the part that moves, so weight by machined mass
+    # and let the fixed masses shift the total.
+    com_x = sum(c.mass_kg * c.com_x_m for c in components) / machined
+    com_z = sum(c.mass_kg * c.com_z_m for c in components) / machined
+    return {
+        "total_mass_kg": total,
+        "com_x_m": com_x,
+        "com_z_m": max(com_z, 1e-4),
+    }
+
+
+# ── UNIFIED-FIELD inner loop ────────────────────────────────────────────────
+# The original inner loop (below) evolves FOUR separate PhiGrids and extracts
+# them separately, so its output is four disconnected slabs. This loop evolves
+# the SINGLE labelled field from unified_phi instead: one level set over the
+# whole car, carved by the same objective gradients, with per-cell density read
+# from the component labels. Because hj_update re-applies the unified field's
+# hard masks every step, the evolving shape automatically respects the wheel
+# exclusion (T7.9 visibility), halo pocket, cartridge bore and virtual cargo --
+# constraints the four-grid path never enforced during evolution.
+
+def _unified_density_field(geom) -> np.ndarray:
+    """Per-cell density (kg/m^3) from component labels, for the shape gradient.
+
+    scalar_objective_velocity multiplies dT/dmass by density; on the unified
+    field the density varies by component (nose 1000, milled parts 163), so it
+    needs an array, not a scalar. Cells outside every component (LABEL_NONE)
+    get 0 -- they can never be solid anyway.
+    """
+    from unified_phi import LABEL_NAMES
+    rho = np.zeros(geom.shape, dtype=np.float64)
+    for lid, name in LABEL_NAMES.items():
+        rho[geom.labels == lid] = get_density(name)
+    return rho
+
+
+def _unified_mass_com_state(geom) -> Optional[dict]:
+    """{total_mass_kg, com_x_m, com_z_m} from the single labelled field.
+
+    Same contract as _proxy_mass_com_state but reads unified_phi.compute_mass_com
+    (which splits by label) instead of four grids. Returns None if nothing is
+    solid, so the caller stops rather than descend against a garbage state.
+    """
+    from unified_phi import compute_mass_com
+    components = compute_mass_com(geom)
+    machined = sum(c.mass_kg for c in components)
+    if machined <= 0:
+        return None
+    total = machined + (
+        CO2_MASS_KG + STUB_WHEEL_AXLE_MASS_KG
+        + STUB_HALO_MASS_KG + STUB_REAR_WING_MASS_KG
+    )
+    com_x = sum(c.mass_kg * c.com_x_m for c in components) / machined
+    com_z = sum(c.mass_kg * c.com_z_m for c in components) / machined
+    return {"total_mass_kg": total, "com_x_m": com_x, "com_z_m": max(com_z, 1e-4)}
+
+
+def _mass_barrier_gradient(total_mass_kg: float) -> float:
+    """d(barrier)/d(mass): negative below the T3.6 48 g floor, 0 above it.
+
+    Added to the real dT/dmass so the mass descent settles AT the floor rather
+    than carving the car to nothing. Once pinned there, the drag term becomes
+    the differentiator -- which is the real F1-in-Schools regime: build to the
+    minimum legal weight, then let aerodynamics win."""
+    if total_mass_kg >= PROXY_MIN_MASS_KG:
+        return 0.0
+    return -(2.0 * PROXY_MASS_BARRIER_WEIGHT
+             * (PROXY_MIN_MASS_KG - total_mass_kg) / PROXY_MIN_MASS_KG ** 2)
+
+
+def _level2_evaluate_unified(
+    W_mm: float,
+    x_front_mm: float,
+    d_halo_mm: float,
+    n_iters: int,
+    output_dir: str,
+    eval_id: int,
+    seed: int = 42,
+    return_geom: bool = False,
+    cargo_placement: Optional[dict] = None,
+):
+    """LOCAL geometry sanity driver on the UNIFIED single field -- NOT physics.
+
+    Builds the unified geometry initialised FULL, then descends a cheap
+    mass/COM PROXY (no aerodynamics) for n_iters steps to check the field
+    evolves and stays one connected body without a solver. It is a smoke test,
+    not an optimiser.
+
+    The REAL optimisation runs through Part 3 (orchestrator -> inner_loop ->
+    unified_bindings), where drag D20 comes from OpenFOAM and race time comes
+    from the locked JAX objective. There is no frontal-area drag stand-in
+    anywhere in the physics path -- it was removed on 2026-07-21.
+    """
+    from unified_phi import build_unified_geometry, enforce_symmetry
+    from phi_updater import (
+        cfl_limited_dt, hj_update, reinitialise_sdf, scalar_objective_velocity,
+    )
+
+    t0 = time.perf_counter()
+
+    def _fail(reason, lifecycle):
+        # 1e6 matches the proxy path's rejection sentinel; the GP training
+        # filter keeps only race_time < 1e5, so rejects are excluded cleanly.
+        r = EvaluationResult(
+            W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
+            race_time=1.0e6, mass_kg=0.0, h_com_m=0.0, x_com_m=0.0,
+            lifecycle=lifecycle, wall_time_s=time.perf_counter() - t0,
+        )
+        return (r, None) if return_geom else r
+
+    try:
+        geom = build_unified_geometry(W_mm, x_front_mm, d_halo_mm,
+                                      init_mode="full", seed=seed,
+                                      cargo_placement=cargo_placement)
+    except ValueError:
+        # (W,x_front,d_halo) itself infeasible (e.g. cargo/halo dead band).
+        return _fail("outer scalars infeasible", "geometry_rejected")
+
+    enforce_symmetry(geom)
+    rho = _unified_density_field(geom)
+
+    for it in range(n_iters):
+        state = _unified_mass_com_state(geom)
+        if state is None:
+            break
+        grads = _proxy_objective_gradients(state["total_mass_kg"])
+        velocity = scalar_objective_velocity(geom.phi, rho, grads, state)
+        hj_update(geom.phi, velocity, cfl_limited_dt(velocity, PROXY_HJ_DT))
+        if (it + 1) % 10 == 0:
+            reinitialise_sdf(geom.phi)
+            enforce_symmetry(geom)
+
+    state = _unified_mass_com_state(geom)
+    if state is None:
+        return _fail("no solid material after evolution", "objective_failed")
+
+    total_mass = state["total_mass_kg"]
+    h_com = state["com_z_m"]
+    x_com = state["com_x_m"]
+    T = (
+        PROXY_W_MASS * (total_mass / PROXY_MASS_REF_KG)
+        + PROXY_W_HCOM * (h_com / PROXY_HCOM_REF_M)
+        + PROXY_W_WHEELBASE * (W_mm / 130.0)
+        + _proxy_mass_barrier(total_mass)
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    snap = geom.phi.save(f"unified_eval{eval_id:04d}", output_dir)
+    result = EvaluationResult(
+        W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
+        race_time=T, mass_kg=total_mass, h_com_m=h_com, x_com_m=x_com,
+        lifecycle="valid_simulated", phi_snapshots={"car": snap},
+        wall_time_s=time.perf_counter() - t0,
+    )
+    return (result, geom) if return_geom else result
+
+
 def _level2_evaluate(
     W_mm:       float,
     x_front_mm: float,
@@ -363,6 +598,7 @@ def _level2_evaluate(
         from fixed_hardware import place_fixed_hardware, compute_default_fixed_hardware_inputs
         hw_inputs = compute_default_fixed_hardware_inputs(
             W_mm, x_front_mm, d_halo_mm, bv.ref_plane_A_m, bv.ref_plane_B_m,
+            rear_face_x_m=bv.rearpod.x_max_m(),
         )
         fixed_hardware_result = place_fixed_hardware(
             W_mm, x_front_mm,
@@ -383,6 +619,8 @@ def _level2_evaluate(
         )
 
     # Initialise phi grids (warm-start if available)
+    from phi_grid_factory import _ATTACHMENT_FACES
+
     phi_grids: dict[str, PhiGrid] = {}
     for comp in PHI_SNAPSHOT_COMPONENT_KEYS:
         region = bv.get(comp)
@@ -395,32 +633,82 @@ def _level2_evaluate(
             ))
             if fixed_hardware_result is not None:
                 void_masks.append(fixed_hardware_result.combined_void_mask)
-        solid_mask, air_mask = PhiGrid.build_hard_masks(region, void_masks, [], solid_masks)
+        elif comp == "rearpod" and fixed_hardware_result is not None:
+            # The cartridge bore runs forward from the car's rear face, so most
+            # of it is rearpod territory. Without this the rearpod plugs the
+            # chamber solid. phi_grid_factory already does this; this path did
+            # not, which is the same divergence as the attachment faces below.
+            from fixed_hardware import _build_cylinder_void_mask
+            void_masks.append(_build_cylinder_void_mask(
+                region.shape, region.origin_m,
+                fixed_hardware_result.canister_cylinder,
+            ))
+
+        # Attachment faces were previously hard-coded to `[]` here, while
+        # phi_grid_factory passed _ATTACHMENT_FACES for the same four
+        # components. Two code paths, one of them silently building grids with
+        # NO forced-solid attachment strip at all.
+        #
+        # It never showed while phi was frozen (the old loop's zero velocity
+        # left the init field in place). The moment a real update started
+        # moving the field, mass descent carved nose and sidepod down to ZERO
+        # solid cells, Part 2's ingest_mass_com raised "component has
+        # non-positive mass", and the evaluation reported objective_failed.
+        solid_mask, air_mask = PhiGrid.build_hard_masks(
+            region, void_masks, _ATTACHMENT_FACES[comp], solid_masks,
+        )
         grid_data = np.zeros(region.shape, dtype=np.float32)
         pg = PhiGrid(comp, region, grid_data, solid_mask, air_mask)
 
+        # "slab" rather than "sphere": each component's inscribed sphere has
+        # radius 0.7*min(nx,ny,nz)/2, which for these elongated boxes is tiny,
+        # sits in the middle, and never touches the attachment faces -- the
+        # assembled result is four disconnected lumps totalling ~8.5 g against
+        # a 48 g minimum (sandbox finding 7). Topology optimisation should
+        # start full and carve away.
         if warm_phi_paths and comp in warm_phi_paths:
             try:
                 loaded = PhiGrid.load(warm_phi_paths[comp])
                 pg = loaded.remap(region, (solid_mask, air_mask))
             except Exception:
-                pg.init("sphere")
+                pg.init("slab")
         else:
-            pg.init("sphere")
+            pg.init("slab")
 
         phi_grids[comp] = pg
 
-    # Level 2 evolution (n_iters Hamilton-Jacobi steps without real CFD sensitivity)
+    # ── Level 2 evolution ──────────────────────────────────────────────────
+    # This used to be `hj_update(pg, np.zeros_like(pg.grid), dt)` -- a LITERAL
+    # ZERO velocity field. hj_update computes `grid - dt*velocity*grad_mag`, so
+    # phi was mathematically unchanged and the only thing that moved geometry
+    # was reinitialise_sdf's redistancing every 10th step. Combined with the
+    # default level2_iters=0, that means NO OPTIMISATION HAS EVER RUN on this
+    # path: every shape it produced was the initialisation field with hard
+    # constraints applied.
+    #
+    # The proxy objective is analytic, so its gradients are exact and need no
+    # CFD at all. Driving the level set with them makes this a real, working
+    # optimisation loop that runs without OpenFOAM.
     if n_iters > 0:
-        from phi_updater import hj_update, reinitialise_sdf
-        dt = 1e-4
-        for _ in range(n_iters):
-            for pg in phi_grids.values():
-                # Zero sensitivity → pure reinitialisation / smoothing step.
-                # hj_update/reinitialise_sdf take the PhiGrid object (not the
-                # raw array) and mutate it in place, returning None.
-                hj_update(pg, np.zeros_like(pg.grid), dt)
-            if (_ + 1) % 10 == 0:
+        from phi_updater import (
+            cfl_limited_dt, hj_update, reinitialise_sdf,
+            scalar_objective_velocity,
+        )
+        for it in range(n_iters):
+            # Mass/COM must be recomputed each step: the fields are moving, so
+            # last step's COM is the wrong linearisation point for this one.
+            state = _proxy_mass_com_state(
+                phi_grids, fixed_hardware_result, x_front_mm
+            )
+            if state is None:
+                break
+            grads = _proxy_objective_gradients(state["total_mass_kg"])
+            for name, pg in phi_grids.items():
+                velocity = scalar_objective_velocity(
+                    pg, get_density(name), grads, state
+                )
+                hj_update(pg, velocity, cfl_limited_dt(velocity, PROXY_HJ_DT))
+            if (it + 1) % 10 == 0:
                 for pg in phi_grids.values():
                     reinitialise_sdf(pg)
 
@@ -469,11 +757,13 @@ def _level2_evaluate(
             z_com = 0.020
         h_com = max(z_com, 0.001)
 
-    # Proxy race time
+    # Proxy race time. The barrier term is what the evolution loop's mass
+    # gradient descends against -- see _proxy_objective_gradients.
     T_proxy = (
-        0.5 * (total_mass / 0.055)
-        + 0.3 * (h_com / 0.025)
-        + 0.2 * (W_mm / 130.0)
+        PROXY_W_MASS * (total_mass / PROXY_MASS_REF_KG)
+        + PROXY_W_HCOM * (h_com / PROXY_HCOM_REF_M)
+        + PROXY_W_WHEELBASE * (W_mm / 130.0)
+        + _proxy_mass_barrier(total_mass)
     )
 
     # Save phi snapshots — PhiGrid.save(candidate_id, out_dir) → absolute path.
@@ -746,10 +1036,58 @@ class BayesianOuterSearch:
             f"  ({n_valid} valid so far)"
         )
 
+    def _fit_feasibility_model(self):
+        """GP over a feasible(1)/infeasible(0) indicator across ALL results.
+
+        The objective GP trains only on `race_time < 1e5`, i.e. only on
+        FEASIBLE points -- every rejection is assigned a 1e6 sentinel and then
+        dropped from the training set entirely. The consequence is not subtle:
+        the GP has no data at all in the infeasible region, so it reports high
+        posterior variance there, and Expected Improvement is drawn to exactly
+        the places that cannot be evaluated. A 25-evaluation demo run had ALL
+        15 BO iterations rejected, clustered at W~139 / d_halo~63, inside the
+        cargo-vs-halo-pocket dead band. The search can stall permanently.
+
+        Feeding the rejections into the objective GP as 1e6 is NOT the fix --
+        a six-order-of-magnitude outlier destroys the fitted length scales and
+        the surrogate becomes useless everywhere.
+
+        The standard remedy is to model feasibility SEPARATELY and multiply the
+        acquisition by the probability of feasibility (constrained EI; Gardner
+        et al. 2014, Gelbart et al. 2014). This regressor on a 0/1 indicator is
+        the cheap version of that -- good enough to steer EI away from a known
+        dead band, and it costs one extra GP fit per proposal.
+
+        Returns None when every result so far has the same feasibility label
+        (nothing to learn, and a constant-target GP fit is ill-conditioned).
+        """
+        import torch
+        from botorch.models import SingleTaskGP
+        from botorch.fit import fit_gpytorch_mll
+        from gpytorch.mlls import ExactMarginalLogLikelihood
+
+        if len(self._results) < 3:
+            return None
+        labels = [1.0 if r.race_time < 1e5 else 0.0 for r in self._results]
+        if len(set(labels)) < 2:
+            return None
+
+        train_X = torch.tensor(
+            [list(r.normalised_params) for r in self._results], dtype=torch.double
+        )
+        train_Y = torch.tensor([[v] for v in labels], dtype=torch.double)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = SingleTaskGP(train_X, train_Y)
+            fit_gpytorch_mll(ExactMarginalLogLikelihood(model.likelihood, model))
+            model.eval()
+        return model
+
     def _propose_next(self) -> "torch.Tensor":
         """
         Fit the GP to all valid observations and return the next candidate
-        in unit space that maximises Expected Improvement.
+        in unit space that maximises Expected Improvement, weighted by the
+        probability that the point is feasible at all.
 
         Falls back to a random sample if fewer than 2 valid points exist.
         """
@@ -757,6 +1095,7 @@ class BayesianOuterSearch:
         from botorch.models import SingleTaskGP
         from botorch.fit import fit_gpytorch_mll
         from botorch.acquisition import ExpectedImprovement
+        from botorch.acquisition.objective import PosteriorTransform  # noqa: F401
         from botorch.optim import optimize_acqf
         from gpytorch.mlls import ExactMarginalLogLikelihood
 
@@ -789,8 +1128,37 @@ class BayesianOuterSearch:
         bounds_t[1] = 1.0
         ei = ExpectedImprovement(model, best_f=train_Y.max())
 
+        feasibility = self._fit_feasibility_model()
+        if feasibility is None:
+            acqf = ei
+        else:
+            from botorch.acquisition import AnalyticAcquisitionFunction
+
+            class _ConstrainedEI(AnalyticAcquisitionFunction):
+                """EI(x) * P(feasible at x), the constrained-EI product form.
+
+                The feasibility GP's posterior mean over a 0/1 indicator is
+                clamped to [0,1] and used directly as P(feasible). A point the
+                model is confident is infeasible gets its EI multiplied by ~0,
+                so the acquisition optimiser stops steering into the dead band
+                while the objective GP stays clean of 1e6 outliers.
+                """
+
+                def __init__(self, ei_acqf, feas_model):
+                    super().__init__(model=ei_acqf.model)
+                    self._ei = ei_acqf
+                    self._feas = feas_model
+
+                def forward(self, X):
+                    ei_val = self._ei(X)
+                    post = self._feas.posterior(X)
+                    p = post.mean.squeeze(-1).squeeze(-1).clamp(0.0, 1.0)
+                    return ei_val * p
+
+            acqf = _ConstrainedEI(ei, feasibility)
+
         candidate, _ = optimize_acqf(
-            acq_function=ei,
+            acq_function=acqf,
             bounds=bounds_t,
             q=1,
             num_restarts=self.cfg.acqf_restarts,

@@ -10,7 +10,7 @@ and velocity extension from surface to volume.
 from __future__ import annotations
 import numpy as np
 
-from geometry_contract import GRID_SPACING_M
+from geometry_contract import GRID_SPACING_M, get_density
 from phi_grid import PhiGrid
 
 
@@ -332,12 +332,129 @@ def _splat_vertex_sensitivity_to_grid(
     return velocity
 
 
+CFL_NUMBER: float = 0.3
+
+
+def cfl_limited_dt(
+    velocity: np.ndarray,
+    dt_requested: float,
+    cfl: float = CFL_NUMBER,
+) -> float:
+    """Clamp dt so the zero level set moves at most `cfl` cells per step.
+
+    The Hamilton-Jacobi update is `phi <- phi - dt*V*|grad phi|`. With phi a
+    signed distance (|grad phi| ~ 1), the surface displacement per step is
+    dt*|V| metres, i.e. dt*|V|/dx CELLS. Upwind HJ schemes are only stable while
+    that stays below ~1, and the narrow band around the surface is only a few
+    cells wide, so overshooting does not merely lose accuracy -- it teleports
+    the surface out of the band and the field stops being a distance function.
+
+    Both callers were far outside that limit and neither had ever been run to
+    the point of noticing (fixed 2026-07-20):
+
+      proxy path   dt=1e-4, |V| ~ dT_dmass*rho ~ 1.5e3  ->  ~15 cells/step at
+                   2 mm spacing. The car was carved away to nothing in the
+                   first few steps and mass/COM then failed outright.
+      adjoint path dt=0.5 (optimizer_contract.hj_dt) with combine_gradients
+                   RMS-normalising |V| to ~1  ->  ~1667 cells/step at the
+                   0.3 mm spec spacing. This one had never executed at all
+                   because the phi update crashed upstream on a dict/Trimesh
+                   mismatch, so its dt was never exercised.
+
+    A fixed dt cannot be correct for both: the stable value depends on the grid
+    spacing and on the velocity magnitude, and the latter changes every
+    iteration. Deriving it here is the only way it stays right.
+
+    Returns 0.0 for a velocity field that is everywhere ~zero (nothing to do).
+    """
+    vmax = float(np.max(np.abs(velocity))) if velocity.size else 0.0
+    if not np.isfinite(vmax) or vmax < 1e-30:
+        return 0.0
+    return float(min(dt_requested, cfl * GRID_SPACING_M / vmax))
+
+
+def _mass_report_values(mass_report) -> tuple[float, float, float]:
+    """(total_mass_kg, com_x_m, com_z_m) from a MassReport-like object or dict.
+
+    Duck-typed on purpose: Part 1 must not import Part 3's MassReport, and the
+    proxy path in bayesian_outer_search has only a plain dict.
+    """
+    if mass_report is None:
+        raise ValueError("mass_report is required to build mass/COM gradients")
+    if isinstance(mass_report, dict):
+        return (
+            float(mass_report["total_mass_kg"]),
+            float(mass_report["com_x_m"]),
+            float(mass_report["com_z_m"]),
+        )
+    return (
+        float(mass_report.total_mass_kg),
+        float(mass_report.com_x_m),
+        float(mass_report.com_z_m),
+    )
+
+
+def scalar_objective_velocity(
+    phi: PhiGrid,
+    density_kgm3: float,
+    objective_gradients: dict,
+    mass_report,
+) -> np.ndarray:
+    """Descent velocity field from the objective's SCALAR gradients.
+
+    This is the term that was missing. The race objective supplies dT/dmass,
+    dT/dh_com and dT/dx_com as scalars, but the level-set update needs a
+    velocity defined over the grid. The bridge is the shape derivative: moving
+    the surface outward by delta at a point adds delta*dA of material there, so
+
+        dm/dS      = rho                        [kg/m^3]
+        dh_com/dS  = rho * (z - h_com) / M      [1/m^2 * m = 1/m]
+        dx_com/dS  = rho * (x - x_com) / M
+
+    Chain rule gives dT/dS, and the DESCENT direction is its negative.
+
+    Sign check, for the mass term: dT_dmass > 0 (a heavier car is slower), so
+    the velocity is -dT_dmass*rho < 0, the surface moves inward, mass falls.
+    For the COM-height term above the COM (z > h_com) the velocity is likewise
+    negative, carving material off the top and lowering the COM. Both behave
+    the way the physics demands.
+
+    Neither term existed before: combine_gradients was fed
+    `np.zeros_like(velocity_volume)` for mass, com and mfg, so w_mass/w_com/
+    w_mfg were multiplying zeros and the update was aero-only no matter how
+    those weights were calibrated.
+    """
+    nx, ny, nz = phi.bv.shape
+    ox, _oy, oz = phi.bv.origin_m
+    dx = GRID_SPACING_M
+
+    M, x_com, h_com = _mass_report_values(mass_report)
+    if M <= 0:
+        raise ValueError(f"total_mass_kg must be positive, got {M}")
+
+    dT_dmass = float(objective_gradients.get("dT_dmass", 0.0))
+    dT_dh_com = float(objective_gradients.get("dT_dh_com", 0.0))
+    dT_dx_com = float(objective_gradients.get("dT_dx_com", 0.0))
+
+    xs = (ox + np.arange(nx) * dx)[:, None, None]
+    zs = (oz + np.arange(nz) * dx)[None, None, :]
+
+    dT_dS = (
+        dT_dmass * density_kgm3
+        + dT_dh_com * density_kgm3 * (zs - h_com) / M
+        + dT_dx_com * density_kgm3 * (xs - x_com) / M
+    )
+    return -np.broadcast_to(dT_dS, (nx, ny, nz)).astype(np.float64)
+
+
 def apply_adjoint_sensitivity_symmetric(
     phi_grids: dict[str, PhiGrid],
     right_half_sensitivity: np.ndarray,
     right_half_mesh,  # trimesh.Trimesh — surface mesh from the right-half CFD run
     dt: float,
     gradient_weights: dict[str, float],
+    objective_gradients: dict | None = None,
+    mass_report=None,
 ) -> None:
     """
     Apply adjoint surface sensitivity to all phi grids via mesh-to-grid splatting.
@@ -420,24 +537,129 @@ def apply_adjoint_sensitivity_symmetric(
         # Extend surface velocity into volume
         velocity_volume = extend_velocity(phi.grid.astype(np.float64), surface_vel)
 
-        # Combine with trivial mass/com/mfg gradients (zero for now — these come
-        # from the analytical gradient computation which is Part 3's responsibility)
-        zero = np.zeros_like(velocity_volume)
+        # Mass / COM terms from the objective's scalar gradients. These used to
+        # be hard zeros here with a comment calling them "Part 3's
+        # responsibility"; Part 3 does compute them and did pass them, but its
+        # binding dropped them before the call, so neither side delivered and
+        # w_mass/w_com silently multiplied nothing. See scalar_objective_velocity.
+        if objective_gradients is not None and mass_report is not None:
+            scalar_vel = scalar_objective_velocity(
+                phi, get_density(name), objective_gradients, mass_report
+            )
+            mass_grad = np.full_like(
+                velocity_volume,
+                -float(objective_gradients.get("dT_dmass", 0.0)) * get_density(name),
+            )
+            com_grad = scalar_vel - mass_grad
+        else:
+            # Aero-only. This is the pre-2026-07-20 behaviour, kept so callers
+            # that genuinely have no objective gradients (unit tests) still run,
+            # but it is NOT what the pipeline should do -- w_mass and w_com are
+            # inert in this branch.
+            mass_grad = np.zeros_like(velocity_volume)
+            com_grad = np.zeros_like(velocity_volume)
+
         combined = combine_gradients(
             aero_gradient=velocity_volume,
-            mass_gradient=zero,
-            com_gradient=zero,
-            mfg_gradient=zero,
+            mass_gradient=mass_grad,
+            com_gradient=com_grad,
+            mfg_gradient=np.zeros_like(velocity_volume),
             w_aero=w_aero,
             w_mass=w_mass,
             w_com=w_com,
             w_mfg=w_mfg,
         )
 
-        hj_update(phi, combined, dt)
+        # dt arrives from the caller (Part 3's config.hj_dt) but is clamped to
+        # the CFL limit for THIS iteration's velocity magnitude -- see
+        # cfl_limited_dt for why a fixed dt cannot be safe.
+        hj_update(phi, combined, cfl_limited_dt(combined, dt))
 
 
 # K-2: SPEC.txt §22 names the φ-update entry point `update_phi`. Part 1 uses
 # `apply_adjoint_sensitivity_symmetric`. Expose both names so Part 3's
 # `from phi_updater import update_phi` succeeds without renaming the function.
 update_phi = apply_adjoint_sensitivity_symmetric
+
+
+def apply_adjoint_to_unified(
+    geom,
+    right_half_sensitivity: np.ndarray,
+    right_half_mesh,
+    dt: float,
+    gradient_weights: dict,
+    objective_gradients: dict,
+    mass_report,
+) -> None:
+    """Evolve the SINGLE unified field with the CFD adjoint + real objective.
+
+    The four-grid `apply_adjoint_sensitivity_symmetric` splats onto four
+    separate grids. This does the same on the one labelled field:
+
+      * the adjoint surface sensitivity (dObjective/dSurface on the right-half
+        mesh, from OpenFOAM's adjoint solve) is splatted onto the field and
+        mirrored to the left half -> the AERO/drag velocity;
+      * the objective's scalar mass/COM gradients (from the locked JAX race
+        objective) become a volume velocity via scalar_objective_velocity using
+        the per-cell density field;
+      * the two are unit-RMS combined (combine_gradients) and applied with a
+        CFL-limited step, then symmetry is re-imposed.
+
+    Mutates geom in place. The single connected field means the drag gradient
+    can move material across what used to be component boundaries.
+
+    IMPORTANT about the balance between drag and mass in the SHAPE UPDATE:
+    combine_gradients normalises each field to unit RMS before weighting, so the
+    real MAGNITUDES of dT_dD20 vs dT_dmass are discarded here -- only the spatial
+    patterns and the scalar weights `w_aero`/`w_mass` survive. The real
+    magnitude balance IS used where it belongs (the objective VALUE and the
+    Bayesian ranking see the true T and gradients); it is NOT what sets the
+    per-step geometry direction. That is set by the weights, which should be
+    calibrated (gradient_combiner.calibrate_gradient_weights) rather than left
+    at 1:1. Do not read this step as "the real physics balance drives the shape".
+    """
+    from unified_phi import density_field, enforce_symmetry
+
+    phi = geom.phi
+    verts = np.asarray(right_half_mesh.vertices, dtype=np.float64)
+    sens = np.asarray(right_half_sensitivity, dtype=np.float64)
+    if len(sens) != len(verts):
+        raise ValueError(
+            f"sensitivity has {len(sens)} values but mesh has {len(verts)} "
+            f"vertices; they must be index-aligned."
+        )
+
+    w_aero = gradient_weights.get("w_aero", 1.0)
+    w_mass = gradient_weights.get("w_mass", 1.0)
+
+    # Aero velocity: splat right-half sensitivity + its y-mirror onto the field.
+    vel_r = _splat_vertex_sensitivity_to_grid(sens, verts, phi)
+    verts_l = verts.copy()
+    verts_l[:, 1] *= -1.0
+    vel_l = _splat_vertex_sensitivity_to_grid(sens, verts_l, phi)
+    surface_vel = (vel_r + vel_l) * 0.5
+    aero_v = extend_velocity(phi.grid.astype(np.float64), surface_vel)
+
+    # Mass/COM velocity from the real objective's scalar gradients.
+    rho = density_field(geom)
+    masscom_v = scalar_objective_velocity(phi, rho, objective_gradients, mass_report)
+
+    combined = combine_gradients(
+        aero_gradient=aero_v, mass_gradient=masscom_v,
+        com_gradient=np.zeros_like(aero_v), mfg_gradient=np.zeros_like(aero_v),
+        w_aero=w_aero, w_mass=w_mass, w_com=0.0, w_mfg=0.0,
+    )
+    # Splatting the surface sensitivity and extending it leaves a few localised
+    # SPIKES (max >> rms). The CFL limiter, correctly, throttles the timestep to
+    # the fastest-moving cell -- so a handful of artifact spikes would freeze the
+    # whole surface (measured: bulk moving 0.017 cells/step while a spike moves
+    # 0.3). Clip to a high percentile so the smooth descent that carries the
+    # real mass/drag/COM signal actually advances.
+    absc = np.abs(combined)
+    nz = absc[absc > 0]
+    if nz.size:
+        cap = float(np.percentile(nz, 99.9))   # trim only the wildest artifacts
+        if cap > 0:
+            combined = np.clip(combined, -cap, cap)
+    hj_update(phi, combined, cfl_limited_dt(combined, dt))
+    enforce_symmetry(geom)

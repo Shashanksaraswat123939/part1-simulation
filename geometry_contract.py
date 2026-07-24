@@ -36,16 +36,39 @@ W_MIN_MM: float = 120.0
 W_MAX_MM: float = 140.0
 
 # x_front: front axle position from nose tip (mm).
-# Min: nose section must fit CO2 cartridge depth (T5.3: 45 mm) forward of Ref Plane A,
-#      so nose length = x_front - 16 >= 45 mm → x_front >= 61 mm.
-# Max: total car (nose + body + rearpod) must fit within 223 mm model block.
-#      Conservative bound uses Ref Plane B only (excludes rearpod from constraint):
-#      x_front + W + 16 <= 223  →  x_front <= 207 - W.
-#      At W=140 this gives 67 mm; absolute cap of 90 mm is never tighter.
-# Both bounds are approximations. calibrate_x_front_bounds(W_mm) returns the
-# exact W-dependent interval used by the Bayesian outer search.
-X_FRONT_MIN_MM: float = 61.0
-X_FRONT_ABS_MAX_MM: float = 90.0   # never exceeded regardless of W
+#
+# The nose occupies x in [0, Ref Plane A] = [0, x_front - 16], so
+#     nose_overhang_mm == x_front - 16.
+#
+# Max: T8.2 (regs p35, verified 2026-07-20) -- "From the Reference plane A the
+#      nose cone overhang is 40mm maximum", measured to the extreme front of
+#      the fully assembled car. So x_front - 16 <= 40  ->  x_front <= 56 mm.
+#      Also bounded by the model block: x_front + W + 16 <= 223 -> x_front <= 207 - W,
+#      which at W=140 gives 67 mm and is therefore never the binding constraint.
+#
+# Min: a design choice, NOT a regulation. The regs set no minimum nose length.
+#      NOSE_OVERHANG_MIN_MM below is a build-practicality floor.
+#
+# HISTORY (fixed 2026-07-20): this bound was previously X_FRONT_MIN_MM = 61.0,
+# derived from "nose section must fit CO2 cartridge depth (T5.3: 45 mm) forward
+# of Ref Plane A". That premise is false -- the cartridge chamber is REAR of
+# Ref Plane A, not in the nose. Regs p22: "A single continuous piece of CNC
+# manufactured Model Block material must exist rear of the reference plane A,
+# encompassing both the virtual cargo and power unit cartridge chamber."
+# fixed_hardware.compute_default_fixed_hardware_inputs has always placed the
+# canister at the rear, so the two disagreed.
+#
+# The old bound was not merely redundant, it was ILLEGAL: it forced
+# nose_overhang >= 45 mm against T8.2's 40 mm maximum, so *every* car the
+# search could propose violated T8.2 by at least 5 mm (19 mm at the commonly
+# used x_front=75). The feasible x_front interval under T8.2 is [36, 56]; the
+# old interval [61, min(90, 207-W)] does not intersect it at all.
+NOSE_OVERHANG_MAX_MM: float = 40.0   # T8.2, hard regulation
+NOSE_OVERHANG_MIN_MM: float = 20.0   # design choice -- no regulation minimum exists
+REF_PLANE_A_OFFSET_MM: float = 16.0  # T1.17: Ref Plane A is 16 mm ahead of front axle
+
+X_FRONT_MIN_MM: float = REF_PLANE_A_OFFSET_MM + NOSE_OVERHANG_MIN_MM   # 36.0
+X_FRONT_ABS_MAX_MM: float = REF_PLANE_A_OFFSET_MM + NOSE_OVERHANG_MAX_MM  # 56.0 (T8.2)
 
 # d_halo upper bound = W + 16.0 mm (computed per W, not a fixed constant)
 # d_halo lower bound: 0.0 (halo at Ref Plane A; nose is degenerate but not an error)
@@ -242,9 +265,14 @@ def calibrate_x_front_bounds(W_mm: float) -> tuple[float, float]:
     """
     Return (x_front_min_mm, x_front_max_mm) for the given wheelbase.
 
-    Min: 61 mm — nose length (x_front - 16) must fit CO2 cartridge (45 mm, T5.3).
-    Max: min(90, 207 - W) mm — total car through Ref Plane B stays within 223 mm block.
-         At W=120: 87 mm.  At W=140: 67 mm.
+    Min: 36 mm — NOSE_OVERHANG_MIN_MM (20 mm, design choice) + Ref Plane A offset.
+    Max: min(56, 207 - W) mm — 56 is T8.2's 40 mm nose overhang ceiling plus the
+         Ref Plane A offset; 207 - W keeps Ref Plane B inside the 223 mm model
+         block. At W=140 the block bound gives 67 mm, so T8.2 always binds and
+         the interval is [36, 56] for every legal W.
+
+    See the X_FRONT_MIN_MM block above for why the old 61 mm floor was wrong
+    (and illegal under T8.2).
     """
     x_min = X_FRONT_MIN_MM
     x_max = min(X_FRONT_ABS_MAX_MM, 207.0 - W_mm)

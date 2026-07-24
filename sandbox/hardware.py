@@ -153,6 +153,7 @@ def build_all(W_mm: float, x_front_mm: float, d_halo_mm: float, bv,
 
     hw_inputs = compute_default_fixed_hardware_inputs(
         W_mm, x_front_mm, d_halo_mm, bv.ref_plane_A_m, bv.ref_plane_B_m,
+        rear_face_x_m=bv.rearpod.x_max_m(),
     )
 
     parts = {
@@ -178,6 +179,7 @@ def hardware_mass_summary(W_mm: float, x_front_mm: float, d_halo_mm: float, bv) 
 
     compute_default_fixed_hardware_inputs(
         W_mm, x_front_mm, d_halo_mm, bv.ref_plane_A_m, bv.ref_plane_B_m,
+        rear_face_x_m=bv.rearpod.x_max_m(),
     )
     return [
         ("co2_cartridge", CO2_MASS_KG),

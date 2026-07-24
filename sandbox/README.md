@@ -142,15 +142,23 @@ docstring). Cargo is only enforced in `_level2_evaluate`, so the flag matters fo
    67.9 g body with recognisable pockets and fins, and is the far better starting
    point: topology optimisation should start full and carve away.
 
-8. **T3.4's minimum width is structurally unreachable.**
-   `y_sidepod_outer_m = 0.0325` m puts the bounding wall at exactly 32.5 mm, i.e.
-   65.0 mm total — precisely T3.4's *minimum*. But `build_hard_masks` forces the
-   outer y cell to air, so the phi=0 surface can never reach the wall. Measured
-   width came out 63.8 mm at 1.5 mm spacing and would be ~64.4 mm at 0.3 mm.
-   **Every car this pipeline can produce is too narrow to be legal.**
-   `y_sidepod_outer_m` has to exceed 32.5 mm (T3.4 allows up to 42.5 mm) to leave
-   room for the border. `PLACEHOLDERS.md` item 1 records 32.5 mm as a deliberate
-   minimum-frontal-area choice; it can't be built at exactly the limit.
+8. **WITHDRAWN 2026-07-20 — this finding was wrong.** It claimed
+   `y_sidepod_outer_m = 0.0325` made "every car this pipeline can produce too
+   narrow to be legal", by measuring the bare machined body against T3.4.
+   T3.4 does not measure the body. Regs p19: *"Total width is the maximum
+   **assembled car** width"*. The assembled car's widest points are the front
+   wheels, whose outer faces sit at y = ±36.5 mm
+   (`FRONT_WHEEL_INNER_Y_MM 19.25 + WHEEL_WIDTH_MM 17.25`), giving **73.0 mm —
+   comfortably inside T3.4's 65–85 mm**. Body width is irrelevant to T3.4, and
+   the 1-cell air border on the outer y wall costs nothing legally.
+
+   `y_sidepod_outer_m` was still changed to 0.0355 m, but on the strength of
+   finding 13 (the corridor was unmachinable) alone — not on legality grounds.
+   The original 0.0325 minimum-frontal-area choice was not illegal.
+
+   Lesson worth keeping: check whether a dimensional reg measures the *machined
+   body* or the *assembled car* before treating a body measurement as a
+   violation. T3.5 (height) has the same "assembled car" wording.
 
 9. **`slab` init leaves nose and rearpod with inverted normals** — both come back
    `watertight=False` with *negative* volume (-16.2 cm³ and -744.1 cm³), so
@@ -191,7 +199,137 @@ docstring). Cargo is only enforced in `_level2_evaluate`, so the flag matters fo
     bodywork. The body is never carved to make room for them, so no legal car can
     come out of this until the exclusion geometry is fixed.
 
-13. **The sidepod corridor is 2.5 mm wide** (`y_sidepod_inner_m=0.030` vs
-   `y_sidepod_outer_m=0.0325`), which is 4 cells at 1.5 mm and collapses to a
-   near-empty grid (0.1% solid, 0.013 g). `PLACEHOLDERS.md` item 1 flags this as
-   needing both values updated together.
+13. ~~**The sidepod corridor is 2.5 mm wide**~~ **FIXED 2026-07-20.** It was
+   4.5 mm at the time of measurement (`y_sidepod_inner_m=0.028` vs
+   `y_sidepod_outer_m=0.0325`) and collapsed to a near-empty grid (0.1% solid,
+   0.013 g). It was also narrower than one 3.15 mm-radius tool (6.3 mm
+   diameter), so no cutter could enter it. `y_sidepod_outer_m` is now 0.0355,
+   giving a 7.5 mm corridor and a 3.8 g sidepod. `y_sidepod_inner_m` is pinned
+   at 28 mm by the T4.2 cargo, so the corridor can only widen from outside.
+
+## Findings from the 2026-07-20 pass
+
+14. ~~**Every car violated T8.2's nose overhang limit.**~~ **FIXED.**
+    `X_FRONT_MIN_MM` was 61.0, derived from "the nose must fit the CO2 cartridge
+    depth (T5.3: 45 mm) forward of Ref Plane A". That premise is false — the
+    cartridge chamber is *rear* of Ref Plane A (regs p22, and
+    `compute_default_fixed_hardware_inputs` had always placed it at the rear, so
+    the two disagreed). The consequence was not cosmetic: the nose spans
+    `[0, x_front-16]`, so a 61 mm floor forced a **>= 45 mm nose overhang against
+    T8.2's 40 mm maximum** (regs p35). The old range `[61, min(90, 207-W)]` does
+    not intersect the legal range `[36, 56]` **at any point** — every candidate
+    the search could propose was illegal, by 19 mm at the commonly-used
+    `x_front=75`. It also forced the long thin front spike in the renders.
+    Bounds are now `[36, 56]`; Part 3's duplicate copy in `optimizer_contract.py`
+    was updated in lockstep (it had silently drifted-by-copy).
+
+15. ~~**The cartridge chamber was a sealed cube.**~~ **FIXED.** The canister void
+    was a box of half-size `diameter/2 + safety_zone` = 12.125 mm in *all three
+    axes*, centred on the canister COM. Wrong three ways at once:
+    24.25 mm deep against T5.3's 45 mm minimum; 24.25 mm across against T5.1's
+    18.0–18.5 mm; and it ended ~54 mm short of the rear face, leaving solid Model
+    Block behind it — **the cartridge could not be inserted and T5.6 was
+    unsatisfiable**. It is now a proper cylindrical bore (18.25 mm dia, 50 mm
+    deep, axis at z=35 mm) anchored to the car's rearmost machined face so it
+    breaks through. Note the bore spans the main_body/rearpod boundary, so
+    `FixedHardwareResult` now carries `canister_cylinder` as geometry and
+    `phi_grid_factory` rasterises it onto *both* grids — the main-body-shaped
+    masks alone could not carve it.
+
+    T5.5's 3 mm safety zone is no longer added to the void (enlarging a hole
+    cannot guarantee a wall). **It is now unchecked anywhere** — it needs a real
+    check on the finished surface in `surface_extraction`'s rule stage.
+
+17. ~~**The optimisation loop had never run.**~~ **FIXED 2026-07-20.** Both
+    paths were dead, in different ways, and both looked converged from outside.
+
+    *Proxy path*: `_level2_evaluate`'s evolution loop called
+    `hj_update(pg, np.zeros_like(pg.grid), dt)` -- a literal zeros velocity.
+    `hj_update` computes `phi - dt*V*|grad phi|`, so phi was mathematically
+    unchanged; only `reinitialise_sdf`'s redistancing every 10th step moved
+    anything. With the default `level2_iters=0` it did not even do that.
+    **Every shape this project has produced was an initialisation field with
+    hard constraints applied.**
+
+    *Real path*: `inner_loop` passed `gate.meshes` (a `dict[str, Trimesh]`) as
+    the adjoint's `right_half_mesh`. A dict has no `.vertices`, so the update
+    raised `AttributeError` on the first iteration, the loop's broad `except`
+    caught it, and the candidate was downgraded to `objective_failed` with phi
+    untouched. Now fixed by `AdjointOutcome`, which makes the sensitivity and
+    the mesh that indexes it travel together.
+
+    The proxy objective's gradients are analytic, so the loop now optimises
+    with no CFD at all: T 1.3932 -> 1.0084 monotonically, mass 101.7 g ->
+    51.7 g, converged by ~120 iterations.
+
+18. ~~**Mass and COM gradients were never delivered by either side.**~~
+    **FIXED.** `phi_updater` fed `combine_gradients` `np.zeros_like(...)` for
+    the mass, COM and manufacturing channels, with a comment calling them
+    "Part 3's responsibility". Part 3 *did* compute them and *did* pass them --
+    and `pipeline_interface.update_phi` accepted `objective_gradients` and
+    `mass_report` as parameters and then dropped them on the floor. Each side
+    assumed the other owned it, so `w_mass` and `w_com` multiplied zeros no
+    matter how carefully they were calibrated.
+
+    `phi_updater.scalar_objective_velocity` now derives the field from the
+    shape derivative: `dm/dS = rho`, `dh_com/dS = rho*(z - h_com)/M`,
+    `dx_com/dS = rho*(x - x_com)/M`.
+
+19. ~~**Both HJ timesteps violated CFL by orders of magnitude.**~~ **FIXED.**
+    A fixed dt cannot be right: stability depends on grid spacing and on a
+    velocity magnitude that changes every iteration.
+    - proxy: dt=1e-4 with |V| ~ dT_dmass*rho ~ 1.5e3 -> **~15 cells/step**
+    - adjoint: `optimizer_contract.hj_dt = 0.5` with `combine_gradients`
+      RMS-normalising |V| to ~1 -> **~1667 cells/step** at 0.3 mm spacing
+    `phi_updater.cfl_limited_dt` now derives the step so the surface moves at
+    most 0.3 cells. The adjoint value had never been exercised because the
+    update crashed upstream (finding 17).
+
+20. ~~**`_level2_evaluate` built its grids with no attachment faces.**~~
+    **FIXED.** It called `PhiGrid.build_hard_masks(region, void_masks, [],
+    solid_masks)` -- attachment faces hard-coded to `[]` -- while
+    `phi_grid_factory` passed `_ATTACHMENT_FACES` for the same four components.
+    Invisible while phi was frozen; the moment a real update started moving the
+    field, mass descent carved nose and sidepod to **zero solid cells** and
+    Part 2's `ingest_mass_com` raised "component has non-positive mass".
+    Also switched this path's init from `sphere` to `slab` (finding 7) and gave
+    the rearpod the cartridge bore that `phi_grid_factory` already had.
+
+    Related, separate bug in `PhiGrid.build_hard_masks`: `air[:, 0, :] = True`
+    was set unconditionally, but the sidepod's `inner_y` attachment strip lives
+    at j=0, and overlap resolution then deleted it. The strip is
+    `ceil(1.0mm / spacing)` cells, so at the 0.3 mm spec spacing 3 of 4 cells
+    survived (a 25% thinning nobody would notice) while at any spacing
+    >= 1.0 mm the attachment **vanished entirely**.
+
+21. ~~**The GP could never learn where it was not allowed to go.**~~
+    **IMPROVED, not solved.** `bayesian_outer_search.py` trains only on
+    `race_time < 1e5`, so rejections are dropped entirely, the GP has no data
+    in the infeasible region, reports high uncertainty there, and EI is drawn
+    to exactly the points that cannot be evaluated. Feeding rejections in at
+    their 1e6 sentinel is not the fix -- that destroys the fitted length scales.
+
+    Now uses constrained EI (Gardner et al. 2014): a second GP over a 0/1
+    feasibility indicator trained on ALL results, multiplied into the
+    acquisition. The objective GP stays clean; the acquisition learns the dead
+    band. Measured over four seeds, BO iterations rejected:
+
+    | seed | plain EI | constrained EI |
+    |---|---|---|
+    | 0 | 13/15 | 4/15 |
+    | 1 | 15/15 | 12/15 |
+    | 2 | 15/15 | 6/15 |
+    | 3 | 14/15 | 11/15 |
+
+    A large, consistent improvement, but **seeds 1 and 3 still waste most of
+    their budget**. A GP regressor on a 0/1 target is a crude classifier, and
+    the dead band is ~37% of the space. A proper classifier (or fixing the
+    cargo/halo-pocket conflict at its source, finding 1) is still wanted.
+
+22. **Still open: assembled length exceeds the model block.** 233.2 mm against
+    T3.1.2's 223 mm (down from 262.2 before the x_front fix, but still over).
+    This is the same question finding 10 raises and it is *not* a bug to patch
+    blindly: the block is 223 x 65 x 50 mm, yet T3.5 allows a 65 mm tall car, so
+    the block plainly bounds the machined body rather than the assembled car.
+    Someone has to decide which components the 223 mm applies to before the
+    bounding volumes can be constrained correctly.

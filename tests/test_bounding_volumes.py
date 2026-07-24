@@ -39,7 +39,7 @@ STUB_RE = default_rule_envelope()
 
 # Default x_front for tests that don't exercise it specifically.
 # 64 mm is valid for all W in [120, 140]: range is [61, 207-W] and 64 ≤ 207-140=67.
-DEFAULT_X_FRONT_MM = 64.0
+DEFAULT_X_FRONT_MM = 46.0
 
 def _make_cylinders(W_mm, x_front_mm=DEFAULT_X_FRONT_MM):
     """Create ForbiddenCylinders in nose-tip coordinate system."""
@@ -68,7 +68,7 @@ def test_sidepod_length_positive_at_W_min():
 def test_nose_length_matches_x_front():
     """Nose extends from x=0 to Ref Plane A = x_front - 16 mm."""
     from geometry_contract import GRID_SPACING_M
-    x_front_mm = 75.0
+    x_front_mm = 46.0
     bv = compute_bounding_volumes(130.0, x_front_mm, 50.0, *_make_cylinders(130.0, x_front_mm), STUB_RE)
     expected_length_m = mm_to_m(x_front_mm - 16.0)   # Ref Plane A from nose tip
     actual_length_m = bv.nose.nx * GRID_SPACING_M
@@ -120,11 +120,23 @@ def test_d_halo_out_of_range_raises():
 
 def test_x_front_out_of_range_raises():
     try:
-        # x_front=50 < X_FRONT_MIN_MM=61 → should raise
-        compute_bounding_volumes(130.0, 50.0, 10.0, *_make_cylinders(130.0, 50.0), STUB_RE)
-        _fail("test_x_front_out_of_range_raises", "x_front=50 < 61 should raise")
+        # x_front=30 < X_FRONT_MIN_MM=36 → should raise
+        compute_bounding_volumes(130.0, 30.0, 10.0, *_make_cylinders(130.0, 30.0), STUB_RE)
+        _fail("test_x_front_out_of_range_raises", "x_front=30 < 36 should raise")
     except ValueError:
         _pass("test_x_front_out_of_range_raises")
+
+def test_x_front_above_t8_2_nose_overhang_raises():
+    # T8.2 caps nose overhang at 40mm from Ref Plane A, and the nose spans
+    # [0, x_front-16], so x_front > 56 is illegal. Regression guard for the
+    # old X_FRONT_MIN_MM=61 floor, which put the ENTIRE search range above
+    # this ceiling -- every car it could propose violated T8.2.
+    try:
+        compute_bounding_volumes(130.0, 60.0, 10.0, *_make_cylinders(130.0, 60.0), STUB_RE)
+        _fail("test_x_front_above_t8_2_nose_overhang_raises",
+              "x_front=60 gives a 44mm nose overhang, above T8.2's 40mm max")
+    except ValueError:
+        _pass("test_x_front_above_t8_2_nose_overhang_raises")
 
 def test_all_shapes_are_positive_ints():
     bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 15.0, *_make_cylinders(130.0), STUB_RE)

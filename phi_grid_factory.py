@@ -48,6 +48,7 @@ from bounding_volumes import (
 )
 from fixed_hardware import (
     ForbiddenCylinder,
+    _build_cylinder_void_mask,
     compute_default_fixed_hardware_inputs,
     place_fixed_hardware,
 )
@@ -149,6 +150,7 @@ def build_phi_grids_for_candidate(
 
     hw_inputs = compute_default_fixed_hardware_inputs(
         W_mm, x_front_mm, d_halo_mm, bv.ref_plane_A_m, bv.ref_plane_B_m,
+        rear_face_x_m=bv.rearpod.x_max_m(),
     )
     # P1-17's exact bug: compute_default_fixed_hardware_inputs's returned
     # dict is missing these two required place_fixed_hardware kwargs. Filled
@@ -162,7 +164,21 @@ def build_phi_grids_for_candidate(
     phi_grids: dict[str, PhiGrid] = {}
     for component in _COMPONENTS:
         region = bv.get(component)
-        void_masks = [hw_result.combined_void_mask] if component == "main_body" else []
+        if component == "main_body":
+            void_masks = [hw_result.combined_void_mask]
+        elif component == "rearpod":
+            # The cartridge chamber bore runs forward from the car's rear face
+            # (T5.6), which puts most of it in rearpod territory and only its
+            # forward end in main_body. hw_result's masks are all main-body-
+            # shaped, so the rearpod has to rasterise the bore onto its own
+            # grid or the chamber is simply plugged with solid rearpod.
+            void_masks = [
+                _build_cylinder_void_mask(
+                    region.shape, region.origin_m, hw_result.canister_cylinder
+                )
+            ]
+        else:
+            void_masks = []
         extra_solid = [solid_masks[component]] if component in solid_masks else None
         hard_solid, hard_air = PhiGrid.build_hard_masks(
             region, void_masks, _ATTACHMENT_FACES[component], solid_masks=extra_solid,

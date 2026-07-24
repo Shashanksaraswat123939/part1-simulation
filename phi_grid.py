@@ -175,7 +175,19 @@ class PhiGrid:
             air[0, :, :] = True
         if not has_rear:
             air[-1, :, :] = True
-        air[:, 0, :] = True
+        # The y=0 border must be skipped when inner_y is an attachment face,
+        # exactly as front/rear are skipped above. It was not, and the overlap
+        # resolution below (`solid = solid & ~air`) then deleted the first cell
+        # of the sidepod's attachment strip. The strip is
+        # ceil(ATTACHMENT_STRIP_MM / spacing) cells, so at the 0.3 mm spec
+        # spacing 3 of 4 cells survived and the bug merely thinned the
+        # attachment by 25%; at any spacing >= 1.0 mm the strip is 1 cell and
+        # the attachment vanished ENTIRELY. That let the sidepod be carved down
+        # to zero solid cells once a real phi update started moving the field,
+        # which in turn made Part 2's ingest_mass_com raise on a zero-mass
+        # component and the whole evaluation report objective_failed.
+        if not has_inner_y:
+            air[:, 0, :] = True
         air[:, -1, :] = True
         air[:, :, 0] = True
         air[:, :, -1] = True

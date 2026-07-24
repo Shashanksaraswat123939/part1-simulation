@@ -121,6 +121,13 @@ class FixedHardwareResult:
     front_cylinder: ForbiddenCylinder
     rear_cylinder:  ForbiddenCylinder
 
+    # The cartridge chamber bore, as geometry rather than a rasterised mask.
+    # The bore spans the main_body/rearpod boundary, so every component grid it
+    # touches has to carve it -- masks above are main-body-shaped and cannot do
+    # that. Callers rasterise this onto each component grid via
+    # _build_cylinder_void_mask (see phi_grid_factory).
+    canister_cylinder: ForbiddenCylinder
+
     # Combined void mask (union of all four) --- convenience, fed to PhiGrid
     combined_void_mask: np.ndarray
 
@@ -375,7 +382,9 @@ def place_fixed_hardware(
     x_front_mm: float,
     halo_geometry: HaloGeometry,
     canister_com_mm: Optional[tuple[float, float, float]],   # ! U2: None until confirmed
-    canister_box_half_size_mm: float,                         # half-size of canister void box
+    canister_radius_mm: float,                                # chamber bore radius (T5.1)
+    canister_depth_mm: float,                                 # chamber bore depth along x (T5.3)
+    canister_rear_face_x_mm: float,                           # rearmost machined face (T5.6)
     wheel_axle_mass_kg: float,
     wheel_axle_com_mm: tuple[float, float, float],
     wheel_x_half_width_mm: float,                             # half-width of wheel assembly in x
@@ -393,7 +402,15 @@ def place_fixed_hardware(
         x_front_mm: front axle position from nose tip in mm (x=0 = nose tip)
         halo_geometry: halo dimensions (x_front_m, x_rear_m, cross_section_yz_m)
         canister_com_mm: (x, y, z) of CO2 canister centre in mm, or None (! U2)
-        canister_box_half_size_mm: half-size of cubic void box around canister in mm
+        canister_radius_mm: bore radius of the cartridge chamber (T5.1: diameter
+            18.0-18.5 mm, so 9.0-9.25 mm). This is the chamber ITSELF, not an
+            inflated keep-clear box -- T5.5's 3.0 mm safety zone is a requirement
+            that 3 mm of Model Block material SURROUND the bore, which is a check
+            on the finished surface, not something you get by enlarging the void.
+        canister_depth_mm: bore depth along x (T5.3: 45.0-58.0 mm)
+        canister_rear_face_x_mm: x of the rearmost machined face of the car. The
+            bore runs forward from here so the cartridge can be inserted and
+            protrude >= 5 mm out the back (T5.6).
         wheel_axle_mass_kg: total mass of all 4 wheels + axles combined, in kg
         wheel_axle_com_mm: (x, y, z) of combined wheels+axles COM in mm
         wheel_x_half_width_mm: half-width of wheel+axle assembly in x (for forbidden zone)
@@ -481,14 +498,37 @@ def place_fixed_hardware(
         | _build_wheel_disc_void_mask(body_grid_shape, body_grid_origin_m, rear_right)
     )
 
-    # Canister void: simple box around canister COM
-    cs_half = mm_to_m(canister_box_half_size_mm)
-    cx, cy, cz = canister_com_m
-    canister_mask = _build_box_void_mask(
-        body_grid_shape, body_grid_origin_m,
-        x_range_m=(cx - cs_half, cx + cs_half),
-        y_range_m=(cy - cs_half, cy + cs_half),
-        z_range_m=(cz - cs_half, cz + cs_half),
+    # Canister void: the cartridge chamber is a CYLINDRICAL BORE along x that
+    # opens at the rear face of the car (T5.1 diameter / T5.3 depth / T5.6
+    # protrusion). It is emphatically not a cube.
+    #
+    # HISTORY (fixed 2026-07-20): this was a cube of half-size
+    # (diameter/2 + safety_zone) = 12.125 mm centred on the canister COM,
+    # which was wrong three ways at once:
+    #   - depth 24.25 mm against T5.3's 45 mm minimum (barely half)
+    #   - bore 24.25 mm across against T5.1's 18.0-18.5 mm
+    #   - sealed: it ended ~54 mm short of the rear face, leaving solid Model
+    #     Block behind it, so the cartridge could not be inserted at all and
+    #     T5.6 was unsatisfiable.
+    # The safety zone is NOT added to the void -- see canister_radius_mm's
+    # docstring above.
+    #
+    # The bore is deliberately extended past the rear face by one grid cell so
+    # that it always cuts cleanly through the rearmost wall rather than
+    # stopping a cell short of it. Cells beyond a grid's extent simply clip.
+    _, cy, cz = canister_com_m
+    canister_cylinder = ForbiddenCylinder(
+        x_center_m=(
+            mm_to_m(canister_rear_face_x_mm) + GRID_SPACING_M
+            - mm_to_m(canister_depth_mm) / 2.0
+        ),
+        y_center_m=cy,
+        z_center_m=cz,
+        radius_m=mm_to_m(canister_radius_mm),
+        x_half_width_m=mm_to_m(canister_depth_mm) / 2.0,
+    )
+    canister_mask = _build_cylinder_void_mask(
+        body_grid_shape, body_grid_origin_m, canister_cylinder
     )
 
     # Halo void
@@ -529,6 +569,7 @@ def place_fixed_hardware(
         rear_axle_void_mask  = rear_axle_mask,
         front_cylinder       = front_cylinder,
         rear_cylinder        = rear_cylinder,
+        canister_cylinder    = canister_cylinder,
         combined_void_mask   = combined,
         fixed_hardware_spec  = spec,
     )
@@ -551,7 +592,14 @@ def place_fixed_hardware(
 CANISTER_DIAMETER_MM: float = 18.25    # T5.1: 18.0-18.5mm, midpoint
 CANISTER_DEPTH_MM: float = 50.0        # T5.3: 45.0-58.0mm
 CANISTER_Z_MM: float = 35.0            # T5.2: 30.0-40.0mm, midpoint (rear-centre height)
-CANISTER_SAFETY_ZONE_MM: float = 3.0   # T5.5: min 3.0mm wall around chamber
+# T5.5: min 3.0mm wall of Model Block material around the chamber.
+# NOT currently consumed by anything. It used to be added to the canister void's
+# half-size, which was backwards -- enlarging the hole removes more material and
+# cannot guarantee a wall thickness. T5.5 is a check on the FINISHED surface:
+# "is there >= 3 mm of solid everywhere around the bore?" That check does not
+# exist yet and belongs in surface_extraction's rule stage, next to the other
+# T5 checks. Left here as the constant that check should read.
+CANISTER_SAFETY_ZONE_MM: float = 3.0   # ! UNCHECKED -- see note above
 
 # Rear wing (T9.4, T9.5) -- mass and COM height are not given by the regs at all;
 # these are placeholders pending a real measured rear wing.
@@ -590,15 +638,24 @@ def compute_default_fixed_hardware_inputs(
     d_halo_mm: float,
     ref_plane_A_m: float,
     ref_plane_B_m: float,
+    rear_face_x_m: float,
 ) -> dict:
     """
     Build a full set of design-default fixed hardware inputs for
     place_fixed_hardware(), given the current outer-loop scalars.
 
+    Args:
+        rear_face_x_m: x of the rearmost machined face of the car, i.e.
+            bounding_volumes.rearpod.x_max_m(). The cartridge chamber is bored
+            forward from here so the cartridge protrudes out the back (T5.6).
+            Passed in rather than derived because only the caller holds the
+            BoundingVolumes that define where the car actually ends.
+
     Returns a dict with keys matching place_fixed_hardware()'s parameter
-    names: halo_geometry, canister_com_mm, canister_box_half_size_mm,
-    wheel_axle_mass_kg, wheel_axle_com_mm, wheel_x_half_width_mm,
-    wheel_axle_z_mm, rear_wing_mass_kg, rear_wing_com_mm.
+    names: halo_geometry, canister_com_mm, canister_radius_mm,
+    canister_depth_mm, canister_rear_face_x_mm, wheel_axle_mass_kg,
+    wheel_axle_com_mm, wheel_x_half_width_mm, wheel_axle_z_mm,
+    rear_wing_mass_kg, rear_wing_com_mm.
     """
     from halo_pocket import compute_halo_pocket_box_m, HALO_POCKET_LENGTH_MM
 
@@ -609,12 +666,13 @@ def compute_default_fixed_hardware_inputs(
         cross_section_yz_m=default_halo_cross_section_yz_m(),
     )
 
-    # Canister: centred fore-aft near the rear of main_body's machined
-    # territory (Ref Plane B), so its chamber can protrude out the true rear
-    # of the assembled car (T5.6).
-    canister_x_m = ref_plane_B_m - mm_to_m(CANISTER_DEPTH_MM / 2.0)
+    # Canister: the chamber is bored forward from the rearmost machined face,
+    # so the cartridge protrudes out the true rear of the assembled car (T5.6).
+    # It was previously anchored to Ref Plane B, which sits ~40 mm forward of
+    # the actual rear face and left the bore sealed inside the bodywork.
+    # The canister's own COM is taken at the bore's mid-depth.
+    canister_x_m = rear_face_x_m - mm_to_m(CANISTER_DEPTH_MM / 2.0)
     canister_com_mm = (canister_x_m * 1000.0, 0.0, CANISTER_Z_MM)
-    canister_box_half_size_mm = CANISTER_DIAMETER_MM / 2.0 + CANISTER_SAFETY_ZONE_MM
 
     # Wheels+axles: COM at the midpoint between front and rear axle (equal
     # front/rear contribution assumed), on centreline, at wheel-radius height.
@@ -629,7 +687,9 @@ def compute_default_fixed_hardware_inputs(
     return {
         "halo_geometry": halo_geometry,
         "canister_com_mm": canister_com_mm,
-        "canister_box_half_size_mm": canister_box_half_size_mm,
+        "canister_radius_mm": CANISTER_DIAMETER_MM / 2.0,
+        "canister_depth_mm": CANISTER_DEPTH_MM,
+        "canister_rear_face_x_mm": rear_face_x_m * 1000.0,
         "wheel_axle_mass_kg": WHEEL_AXLE_MASS_KG,
         "wheel_axle_com_mm": wheel_axle_com_mm,
         "wheel_x_half_width_mm": WHEEL_X_CLEARANCE_HALF_WIDTH_MM,

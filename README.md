@@ -2,6 +2,11 @@
 
 Level-set phi field geometry pipeline for STEM Racing car optimisation.
 
+> 📐 **Whole-project architecture:** see [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+> (two-stage optimiser, physics, fixed features) and
+> [`../SESSION_CHANGES_2026-07-24.md`](../SESSION_CHANGES_2026-07-24.md) for the
+> latest changes (Stage-1 search, ballast void, cargo flip).
+
 ## Install
 
 ```bash

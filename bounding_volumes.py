@@ -517,9 +517,26 @@ def default_rule_envelope() -> "RuleEnvelope":
     Design choices within a legal range (regs give a range, not an exact
     number -- these are starting points, override if you have a specific
     target):
-      y_sidepod_outer_m = 0.0325 m  -- confirmed design target: build to
-                          T3.4's legal MINIMUM half-width (32.5mm) rather
-                          than its max (42.5mm), for reduced frontal area.
+      y_sidepod_outer_m = 0.0355 m  -- raised from 0.0325 on 2026-07-20 for ONE
+                          reason: MACHINABILITY. outer 32.5 - inner 28.0 left a
+                          4.5mm corridor, narrower than a single 3.15mm-radius
+                          tool (6.3mm diameter). No cutter could enter it and
+                          the grid collapsed to ~0.1% solid / 0.013 g. 35.5mm
+                          gives a 7.5mm corridor, just over one tool diameter.
+
+                          NOT changed for legality. T3.4 measures the
+                          "maximum assembled car width" (regs p19), and the
+                          assembled car's widest points are the front wheels at
+                          y = +/-36.5mm -> 73.0mm, inside T3.4's 65-85mm
+                          regardless of how wide the body is. An earlier
+                          analysis claimed the 32.5mm setting made every car
+                          illegally narrow; that compared a body measurement
+                          against an assembled-car rule and was wrong. The
+                          original minimum-frontal-area choice was legal.
+
+                          Move toward 0.0425 if you want genuinely shaped
+                          sidepods rather than slots -- 7.5mm buys tool
+                          clearance, not much sculpting freedom.
       y_body_half_m     = 0.028 m   -- NOT itself a regulation number. Set to
                           the minimum that still comfortably contains the
                           T4.2 virtual cargo's wide end (55mm width = 27.5mm
@@ -527,19 +544,17 @@ def default_rule_envelope() -> "RuleEnvelope":
       y_sidepod_inner_m = 0.028 m   -- matches y_body_half_m (sidepod attaches
                           directly to the body's outer wall, no gap).
 
-    KNOWN TENSION worth flagging explicitly: y_sidepod_outer_m (32.5mm) minus
-    y_sidepod_inner_m (28mm) leaves only a 4.5mm-wide sidepod corridor. This
-    is a direct consequence of choosing the legal-minimum overall car width
-    (32.5mm half-width) while the virtual cargo requirement alone needs
-    27.5mm of that just for its own half-width. If a wider sidepod is wanted,
-    y_sidepod_outer_m must move toward T3.4's legal max (42.5mm half-width)
-    instead of its min.
+    RESIDUAL TENSION worth flagging: y_sidepod_inner_m is pinned at 28mm by the
+    T4.2 virtual cargo's 55mm-wide end (27.5mm half-width plus margin), so the
+    corridor can only be widened from the outside. Every millimetre of sidepod
+    is a millimetre of extra frontal area; 7.5mm is the narrowest corridor that
+    a 3.15mm-radius tool can actually enter.
     """
     return RuleEnvelope(
         y_body_half_m=0.028,
         y_nose_half_m=0.015,
         y_sidepod_inner_m=0.028,
-        y_sidepod_outer_m=0.0325,
+        y_sidepod_outer_m=0.0355,
         z_floor_m=0.0015,
         z_nose_top_m=0.025,
         z_sidepod_top_m=0.065,

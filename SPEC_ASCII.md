@@ -1,5 +1,19 @@
 # Part 1: Generative Geometry Designer --- Exhaustive Build Specification
 
+> **⚠️ STALE IN PLACES (banner added 2026-07-24). Read `../ARCHITECTURE.md` for
+> the current architecture.** This exhaustive spec predates three changes and its
+> embedded source listings/tests have NOT been retro-edited (they would desync
+> from the real source):
+> 1. **`d_halo` bound:** this doc hard-codes `d_halo ∈ [0, W+16]` (constants,
+>    `validate_d_halo`, and tests treating 146 mm as valid for W=130). The
+>    **authoritative** bound is `d_halo < W - 34` mm (strict), per
+>    `geometry_contract.calibrate_d_halo_max_mm`. Trust the code, not the listing.
+> 2. **Outer architecture:** now **two-stage** (Stage 1 = no-CFD Bayesian on
+>    mass/COM over W+x_front; Stage 2 = per-`d_halo` CFD+adjoint sweep), not a
+>    single 3-scalar BO with nested adjoint.
+> 3. **Virtual cargo** has a legal fore-aft **flip**, and a mandatory **ballast
+>    container** void now exists (Appendix ix). See `SESSION_CHANGES_2026-07-24.md`.
+
 **Version:** Final  
 **Governing specs:** `01_generative_geometry_1_.md`, `02_simulation_setups_1_.md`, `03_optimizer_workflow_1_.md`  
 **Part 2 status:** Fully implemented, 82 tests pass. Every type, function, and constant referenced below is real and locked.  

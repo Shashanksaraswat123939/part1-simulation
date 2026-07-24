@@ -292,9 +292,13 @@ Verified end-to-end: two evaluations differing only in `d_halo` now produce
 different `main_body` masks, different mass, and different race-time proxy
 (`tests/test_halo_pocket.py::test_d_halo_changes_bounding_volumes_end_to_end`).
 
-**d_halo bound also corrected:** was a flat `W+16` (136-156mm depending on W);
-now `min(100, W+16)` per project owner confirmation — always exactly 100mm
-for `W` in `[120,140]`. `calibrate_d_halo_max_mm(W_mm)` in `geometry_contract.py`.
+**d_halo bound (CURRENT, corrected 2026-07-24):** the strict upper bound is
+`d_halo < W - 34` mm (`calibrate_d_halo_max_mm(W_mm)` in `geometry_contract.py`),
+placement-derived so the 50 mm pocket's rear edge cannot reach the rear axle. For
+`W ∈ [120,140]` this is `[0, 86)` … `[0, 106)` mm. (Earlier notes in this file said
+`W+16` then `min(100, W+16)=100`; both are **superseded** by `W-34`.) In the
+two-stage architecture `d_halo` is the **Stage-2 CFD sweep** variable — see
+`../ARCHITECTURE.md`.
 
 **Still approximate:** the pocket is modelled as its full bounding rectangle,
 not the tapered/rounded outline in the diagram (conservative — excludes a bit
@@ -339,3 +343,40 @@ cargo somewhere illegal. Confirmed via
 box, unlike items 13/14 above) — accuracy matters more here because
 over-forcing solid volume beyond the regulatory minimum directly adds
 unwanted mass, unlike the forbidden-zone cases where over-exclusion is safe.
+
+**Updated 2026-07-24 (fore-aft flip):** T4.2 leaves the wedge's fore-aft
+orientation free (it fixes only symmetry about, and the top face normal to, the
+vertical reference plane — NOT which end faces front). `build_virtual_cargo_solid_mask`
+now takes a `flip` argument, and `find_cargo_placement` enumerates both
+orientations. The flip shifts the wedge's own COM by ~13.8 mm. Cargo is interior
+→ zero aero → its only race-time lever is `com_x`; the mass/COM proxy has no
+`com_x` term, so meaningful cargo placement is scored by the **real race objective
+at a nominal drag** (`stage1_search.make_race_objective_cargo_scorer`), not the
+proxy. See item 16 and `../ARCHITECTURE.md`.
+
+---
+
+## 16. NEW (2026-07-24): ballast container void + Stage-1 no-CFD search
+
+**Ballast container (was not modelled).** Appendix ix mandates an **empty** legal
+ballast container under the halo aperture — a 12.7 mm-wide oval (2×R6.35 ends),
+~20 mm long, cut 6.35 mm below the halo-pocket floor — present **at all times**.
+Previously only the shallow halo mounting recess existed.
+`halo_pocket.build_ballast_container_forbidden_mask` now forces this slot to air
+(φ > 0), wired into `unified_phi` hard-air just after the halo pocket. It sits
+below the pocket floor, so it opens upward through the (already void) pocket — an
+open recess, not a sealed internal cavity. Ballast material itself is optional
+(added only to reach the 48 g floor); the *cavity* is mandatory. Length ~20 mm is
+a drawing estimate — refine against the exact Appendix ix oval if reclaiming that
+sliver ever matters.
+
+**Stage-1 no-CFD search (new module `stage1_search.py`).** Bayesian (GP + EI) over
+`(W, x_front)` on the mass/COM proxy, evolving each design to the 48 g floor
+before ranking, with cargo placement/flip scored inside each eval (opt-in via a
+`cargo_scorer`). This is the outer half of the two-stage architecture; `d_halo`
+is held nominal here and swept with CFD in Stage 2. Known limitation: with no
+drag, Stage 1 picks a **mass-optimal** wheelbase, not necessarily a drag-optimal
+one — the deliberate cost of "no CFD for wheelbase." See `../ARCHITECTURE.md` §4.1.
+
+**Still to do:** rewire the Stage-2 outer loop to sweep `d_halo` (it currently
+sweeps `W`), and add a `run_two_stage.py` Stage-1→Stage-2 entry point.

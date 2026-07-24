@@ -60,6 +60,7 @@ _SPACING_CONSUMERS = (
     "phi_grid_factory",
     "phi_updater",
     "surface_extraction",
+    "unified_phi",
     "virtual_cargo",
     "wheel_visibility_zones",
 )

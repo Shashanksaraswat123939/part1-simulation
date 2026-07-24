@@ -73,7 +73,8 @@ def diagnose(W: float, xf: float, dh: float, rule_envelope) -> tuple[str, str]:
 
     try:
         hw = compute_default_fixed_hardware_inputs(
-            W, xf, dh, bv.ref_plane_A_m, bv.ref_plane_B_m)
+            W, xf, dh, bv.ref_plane_A_m, bv.ref_plane_B_m,
+            rear_face_x_m=bv.rearpod.x_max_m())
         hw["body_grid_shape"] = bv.main_body.shape
         hw["body_grid_origin_m"] = bv.main_body.origin_m
         place_fixed_hardware(W_mm=W, x_front_mm=xf, **hw)

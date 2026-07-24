@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spacing", type=float, default=2.0, help="grid spacing mm")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", default=None)
+    p.add_argument("--unified", action="store_true",
+                   help="each evaluation runs the UNIFIED single-field phi loop "
+                        "(one connected body) instead of the four-grid path")
+    p.add_argument("--inner-iters", type=int, default=0,
+                   help="phi-evolution steps per evaluation (only meaningful with "
+                        "--unified; 0 = geometry only, no shape evolution)")
     return p.parse_args()
 
 
@@ -76,8 +82,34 @@ def _expected_improvement(mu, sigma, best):
     return imp * norm.cdf(z) + sigma * norm.pdf(z)
 
 
+def _feasibility_probability(results, Xq, lengthscale=0.3):
+    """P(feasible) at each query point, from a GP over a 0/1 indicator.
+
+    Mirrors BayesianOuterSearch._fit_feasibility_model. Returns None when every
+    result so far shares the same label (nothing to learn yet).
+    """
+    labels = np.array([1.0 if r.race_time < 1e5 else 0.0 for r in results])
+    if len(results) < 3 or len(np.unique(labels)) < 2:
+        return None
+    X = np.array([r.normalised_params for r in results])
+    mu, _ = _gp_posterior(X, labels - labels.mean(), Xq, lengthscale=lengthscale)
+    return np.clip(mu + labels.mean(), 0.0, 1.0)
+
+
 def _propose_numpy(results, rng, n_candidates=4000):
-    """Pick the next unit-space point by maximising EI over a random candidate set."""
+    """Next unit-space point maximising EI *weighted by P(feasible)*.
+
+    The objective GP is fitted on valid points only -- feeding rejections in at
+    their 1e6 sentinel would wreck its length scales. But training on valid
+    points alone leaves the model with no data in the infeasible region, so it
+    reports high uncertainty there and EI is actively drawn to it. That is what
+    made this demo's earlier runs put ALL 15 BO iterations inside the
+    cargo-vs-halo-pocket dead band at W~139 / d_halo~63.
+
+    Multiplying EI by a separately-modelled P(feasible) is the constrained-EI
+    product form (Gardner et al. 2014): the objective GP stays clean, and the
+    acquisition still knows where not to go.
+    """
     valid = [r for r in results if r.race_time < 1e5]
     if len(valid) < 3:
         return rng.random(3)
@@ -90,6 +122,10 @@ def _propose_numpy(results, rng, n_candidates=4000):
     Xq = rng.random((n_candidates, 3))
     mu, sigma = _gp_posterior(X, y, Xq)
     ei = _expected_improvement(mu, sigma, y.min())
+
+    p_feasible = _feasibility_probability(results, Xq)
+    if p_feasible is not None:
+        ei = ei * p_feasible
     return Xq[int(np.argmax(ei))]
 
 
@@ -159,7 +195,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     from bayesian_outer_search import (
-        _level2_evaluate, _from_unit, _abs_bounds,
+        _level2_evaluate, _level2_evaluate_unified, _from_unit, _abs_bounds,
     )
     from bounding_volumes import default_rule_envelope
 
@@ -172,6 +208,11 @@ def main() -> int:
     print(f"== Bayesian outer search demo ==")
     print(f"  backend    {backend}"
           f"{'  (botorch not installed -- using the fallback GP)' if backend == 'numpy-gp' else ''}")
+    if args.unified:
+        inner = f"UNIFIED single field, {args.inner_iters} steps/eval, mass proxy"
+    else:
+        inner = "four-grid geometry only (no evolution)"
+    print(f"  inner loop {inner}")
     print(f"  spacing    {args.spacing} mm")
     print(f"  budget     {args.n_seed} seed + {args.n_bo} BO = {args.n_seed + args.n_bo} evaluations")
     (w_lo, w_hi), (xf_lo, xf_hi), (dh_lo, dh_hi) = _abs_bounds()
@@ -210,13 +251,21 @@ def main() -> int:
                          or abs(dh - _from_unit(u)[2]) > 1e-9)
 
         t0 = time.perf_counter()
-        result = _level2_evaluate(
-            W, xf, dh,
-            rule_envelope=rule_envelope,
-            n_iters=0,
-            output_dir=str(out_dir),
-            eval_id=i + 1,
-        )
+        if args.unified:
+            # Bayesian outer search -> UNIFIED single-field inner loop (mass
+            # proxy, no CFD -- a local geometry smoke test). The REAL physics
+            # optimisation is the Part 3 OpenFOAM path, not this demo.
+            result = _level2_evaluate_unified(
+                W, xf, dh, args.inner_iters, str(out_dir), i + 1,
+            )
+        else:
+            result = _level2_evaluate(
+                W, xf, dh,
+                rule_envelope=rule_envelope,
+                n_iters=0,
+                output_dir=str(out_dir),
+                eval_id=i + 1,
+            )
         results.append(result)
 
         t_str = f"{result.race_time:9.4f}" if result.race_time < 1e5 else "  REJECTED"

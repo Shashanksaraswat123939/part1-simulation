@@ -19,7 +19,7 @@ def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
 
 def test_build_phi_grids_returns_all_four_components():
     from phi_grid_factory import build_phi_grids_for_candidate
-    grids, bv = build_phi_grids_for_candidate(130.0, 64.0, 50.0)
+    grids, bv = build_phi_grids_for_candidate(130.0, 46.0, 50.0)
     assert set(grids.keys()) == {"nose", "sidepod", "rearpod", "main_body"}
     for name, phi in grids.items():
         assert phi.component == name
@@ -35,7 +35,7 @@ def test_body_grid_shape_matches_bounding_volumes():
     # compute_default_fixed_hardware_inputs's returned dict. This test fails
     # loudly (TypeError) if that wiring regresses.
     from phi_grid_factory import build_phi_grids_for_candidate
-    grids, bv = build_phi_grids_for_candidate(130.0, 64.0, 50.0)
+    grids, bv = build_phi_grids_for_candidate(130.0, 46.0, 50.0)
     assert grids["main_body"].bv.shape == bv.main_body.shape
     assert grids["main_body"].bv.origin_m == bv.main_body.origin_m
     _pass("test_body_grid_shape_matches_bounding_volumes")
@@ -43,7 +43,7 @@ def test_body_grid_shape_matches_bounding_volumes():
 
 def test_hard_constraints_are_self_consistent():
     from phi_grid_factory import build_phi_grids_for_candidate
-    grids, _bv = build_phi_grids_for_candidate(130.0, 64.0, 50.0)
+    grids, _bv = build_phi_grids_for_candidate(130.0, 46.0, 50.0)
     for name, phi in grids.items():
         overlap = phi.hard_mask_solid & phi.hard_mask_air
         assert not overlap.any(), f"{name}: solid/air mask overlap"
@@ -63,15 +63,16 @@ def test_main_body_has_hardware_void_masks_others_dont():
     from bounding_volumes import compute_bounding_volumes, default_rule_envelope
     from phi_grid_factory import _default_forbidden_cylinders
 
-    grids, bv = build_phi_grids_for_candidate(130.0, 64.0, 50.0)
+    grids, bv = build_phi_grids_for_candidate(130.0, 46.0, 50.0)
 
-    front_cyl, rear_cyl = _default_forbidden_cylinders(130.0, 64.0, 8.0)
+    front_cyl, rear_cyl = _default_forbidden_cylinders(130.0, 46.0, 8.0)
     hw_inputs = compute_default_fixed_hardware_inputs(
-        130.0, 64.0, 50.0, bv.ref_plane_A_m, bv.ref_plane_B_m,
+        130.0, 46.0, 50.0, bv.ref_plane_A_m, bv.ref_plane_B_m,
+        rear_face_x_m=bv.rearpod.x_max_m(),
     )
     hw_inputs["body_grid_shape"] = bv.main_body.shape
     hw_inputs["body_grid_origin_m"] = bv.main_body.origin_m
-    hw_result = place_fixed_hardware(W_mm=130.0, x_front_mm=64.0, **hw_inputs)
+    hw_result = place_fixed_hardware(W_mm=130.0, x_front_mm=46.0, **hw_inputs)
 
     # main_body's air mask must be a superset of the hardware void mask
     # (it also includes the 1-cell border + invalid region, so not equal).
@@ -93,7 +94,7 @@ def test_nose_and_rearpod_attach_rear_sidepod_attaches_inner_y():
 def test_invalid_W_raises():
     from phi_grid_factory import build_phi_grids_for_candidate
     try:
-        build_phi_grids_for_candidate(100.0, 64.0, 20.0)
+        build_phi_grids_for_candidate(100.0, 46.0, 20.0)
     except ValueError:
         return _pass("test_invalid_W_raises")
     _fail("test_invalid_W_raises", "expected ValueError")
@@ -102,7 +103,7 @@ def test_invalid_W_raises():
 def test_invalid_d_halo_raises():
     from phi_grid_factory import build_phi_grids_for_candidate
     try:
-        build_phi_grids_for_candidate(130.0, 64.0, 200.0)
+        build_phi_grids_for_candidate(130.0, 46.0, 200.0)
     except ValueError:
         return _pass("test_invalid_d_halo_raises")
     _fail("test_invalid_d_halo_raises", "expected ValueError")
@@ -110,18 +111,18 @@ def test_invalid_d_halo_raises():
 
 def test_different_seeds_produce_different_random_grids():
     from phi_grid_factory import build_phi_grids_for_candidate
-    g1, _ = build_phi_grids_for_candidate(130.0, 64.0, 50.0, init_mode="random", seed=1)
-    g2, _ = build_phi_grids_for_candidate(130.0, 64.0, 50.0, init_mode="random", seed=2)
+    g1, _ = build_phi_grids_for_candidate(130.0, 46.0, 50.0, init_mode="random", seed=1)
+    g2, _ = build_phi_grids_for_candidate(130.0, 46.0, 50.0, init_mode="random", seed=2)
     assert not np.array_equal(g1["nose"].grid, g2["nose"].grid)
     _pass("test_different_seeds_produce_different_random_grids")
 
 
 def test_warm_start_requires_all_four_components():
     from phi_grid_factory import build_phi_grids_for_candidate, warm_start_phi_grids
-    grids, _bv = build_phi_grids_for_candidate(130.0, 64.0, 50.0)
+    grids, _bv = build_phi_grids_for_candidate(130.0, 46.0, 50.0)
     incomplete = {k: v for k, v in grids.items() if k != "nose"}
     try:
-        warm_start_phi_grids(incomplete, 131.0, 64.0, 50.0)
+        warm_start_phi_grids(incomplete, 131.0, 46.0, 50.0)
     except ValueError as e:
         assert "nose" in str(e)
         return _pass("test_warm_start_requires_all_four_components")
@@ -130,8 +131,8 @@ def test_warm_start_requires_all_four_components():
 
 def test_warm_start_produces_valid_grids_at_new_W():
     from phi_grid_factory import build_phi_grids_for_candidate, warm_start_phi_grids
-    grids, _bv = build_phi_grids_for_candidate(130.0, 64.0, 50.0)
-    new_grids, new_bv = warm_start_phi_grids(grids, 132.0, 64.0, 50.0)
+    grids, _bv = build_phi_grids_for_candidate(130.0, 46.0, 50.0)
+    new_grids, new_bv = warm_start_phi_grids(grids, 132.0, 46.0, 50.0)
     assert set(new_grids.keys()) == {"nose", "sidepod", "rearpod", "main_body"}
     assert new_bv.W_mm == 132.0
     _pass("test_warm_start_produces_valid_grids_at_new_W")

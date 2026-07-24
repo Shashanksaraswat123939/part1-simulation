@@ -14,6 +14,18 @@ The physics finds the shape.
 
 ## Three-Level Optimization Structure
 
+> **⚠️ ARCHITECTURE UPDATE (2026-07-24) — read `../ARCHITECTURE.md` first.**
+> The single 3-scalar Bayesian search with a nested adjoint per evaluation
+> (described below) is **superseded** by a **two-stage** architecture:
+> **Stage 1** = Bayesian (GP+EI) over **(W, x_front) only**, scored on the
+> **mass/COM proxy with NO CFD** (`part1-simulation/stage1_search.py`);
+> **Stage 2** = a **sweep over `d_halo`** where each halo distance is a
+> **separate car** run through the CFD+adjoint φ loop and ranked by real race
+> time. The material below still describes the φ / Level-2 / Level-3 mechanics
+> correctly, but the *outer* structure (Level 1) is now the two-stage flow.
+> Rationale: W/x_front are mass/COM decisions (cheap, no CFD); `d_halo`'s payoff
+> is aerodynamic (needs CFD per car).
+
 Part 1 operates across three nested levels:
 
 ```text
@@ -62,9 +74,15 @@ x_front_max: model block length (223mm) minus wheelbase minus rearpod overhang
 d_halo bounds (depend on W and x_front — recomputed each Bayesian sample):
 
 ```text
-d_halo_min: minimum physical clearance between canister rear and halo pocket
-d_halo_max: W + 16mm (per project design rule)
+d_halo_min: 0 mm (halo pocket front edge at Ref Plane A)
+d_halo_max: W - 34 mm  (STRICT upper bound, exclusive)
 ```
+**Authoritative bound: `d_halo < W - 34` mm** (`geometry_contract.calibrate_d_halo_max_mm`).
+Placement-derived: the 50 mm halo pocket, offset 16 mm behind Ref Plane A, must
+not reach the rear axle → `d_halo < W - (50 - 16) = W - 34`. For `W ∈ [120,140]`
+that is `[0, 86)` … `[0, 106)` mm. (The old `W + 16` / `min(100, W+16)` figure was
+stale — corrected 2026-07-24. In the two-stage flow `d_halo` is the Stage-2 sweep
+variable, not a Bayesian dimension.)
 
 Any Bayesian sample that violates derived bounds is rejected before
 running the inner loop.
@@ -370,9 +388,13 @@ Hard constraints in φ grid:
 ```text
 cartridge chamber void:   φ forced > 0 (position from x_front and T5.2)
 halo pocket void:         φ forced > 0 (position from d_halo, depth from T4.4.4)
+ballast container void:   φ forced > 0 (mandatory empty oval under halo aperture,
+                          12.7mm×~20mm×6.35mm deep, Appendix ix — added 2026-07-24)
 axle hole voids:          φ forced > 0 (at x_front and x_front+W)
 tether guide voids:       φ forced > 0 (within 10mm of each axle, T6.1)
-virtual cargo void:       φ forced < 0 (min 60×55×10mm between axle lines, T4.2)
+virtual cargo (solid):    φ forced < 0 (min 60mm×[55→10]mm×10mm, between the
+                          front/rear axle lines, T4.2; x-position AND fore-aft
+                          flip are legal DOFs — flip added 2026-07-24)
 sidepod attachment walls: φ forced < 0 (solid connection guaranteed)
 outer envelope:           φ forced > 0
 ```
@@ -523,7 +545,10 @@ Accessibility failure (large)   → assign manufacturing penalty, continue
 Rule violation (minor)          → project back into legal region, retry
 Rule violation (major)          → assign hard penalty, kill candidate
 Mesh quality fails              → simplify surface, retry
-Weight below 48g                → flag for ballast, continue (ballast in halo pocket)
+Weight below 48g                → flag for ballast, continue (ballast added to the
+                                  mandatory legal ballast container under the halo,
+                                  Appendix ix; the container is always modelled as
+                                  an empty void — see ballast container void above)
 All retries exhausted           → assign failure penalty, kill candidate
 ```
 

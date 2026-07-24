@@ -43,7 +43,7 @@ def test_round_trip_normalisation():
     """_from_unit(_to_unit(p)) ≈ p for arbitrary interior point."""
     try:
         import torch
-        params = (128.0, 65.0, 40.0)
+        params = (128.0, 46.0, 40.0)
         u = _to_unit(*params)
         u_t = torch.tensor(list(u), dtype=torch.double)
         recovered = _from_unit(u_t)
@@ -51,7 +51,7 @@ def test_round_trip_normalisation():
             assert abs(a - b) < 1e-6, f"round-trip failed: {params} → {recovered}"
     except ImportError:
         # Verify normalisation without torch by checking the math directly
-        params = (128.0, 65.0, 40.0)
+        params = (128.0, 46.0, 40.0)
         u = _to_unit(*params)
         (w_lo, w_hi), (xf_lo, xf_hi), (dh_lo, dh_hi) = _abs_bounds()
         W_rec   = w_lo  + u[0] * (w_hi  - w_lo)
@@ -66,24 +66,26 @@ def test_round_trip_normalisation():
 # ── Constraint validation tests ────────────────────────────────────────────────
 
 def test_is_valid_accepts_good_params():
-    assert _is_valid(130.0, 64.0, 50.0), "W=130 xf=64 dh=50 should be valid"
+    assert _is_valid(130.0, 46.0, 50.0), "W=130 xf=64 dh=50 should be valid"
     _pass("test_is_valid_accepts_good_params")
 
 
 def test_is_valid_rejects_W_out_of_range():
-    assert not _is_valid(119.0, 64.0, 50.0), "W=119 should be invalid"
-    assert not _is_valid(141.0, 64.0, 50.0), "W=141 should be invalid"
+    assert not _is_valid(119.0, 46.0, 50.0), "W=119 should be invalid"
+    assert not _is_valid(141.0, 46.0, 50.0), "W=141 should be invalid"
     _pass("test_is_valid_rejects_W_out_of_range")
 
 
 def test_is_valid_rejects_x_front_too_small():
-    assert not _is_valid(130.0, 50.0, 50.0), "x_front=50 < 61 should be invalid"
+    assert not _is_valid(130.0, 30.0, 50.0), "x_front=30 < X_FRONT_MIN_MM=36 should be invalid"
+    assert not _is_valid(130.0, 60.0, 50.0), \
+        "x_front=60 exceeds 56: nose overhang would be 44mm against T8.2's 40mm max"
     _pass("test_is_valid_rejects_x_front_too_small")
 
 
 def test_is_valid_rejects_d_halo_too_large():
     # d_halo_max = W + 16 = 130 + 16 = 146
-    assert not _is_valid(130.0, 64.0, 147.0), "d_halo=147 > W+16=146 should be invalid"
+    assert not _is_valid(130.0, 46.0, 147.0), "d_halo=147 > W+16=146 should be invalid"
     _pass("test_is_valid_rejects_d_halo_too_large")
 
 
@@ -92,13 +94,13 @@ def test_is_valid_rejects_d_halo_too_large():
 def test_level2_returns_evaluation_result():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=64.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
     assert isinstance(result, EvaluationResult)
     assert result.W_mm == 130.0
-    assert result.x_front_mm == 64.0
+    assert result.x_front_mm == 46.0
     assert result.d_halo_mm == 10.0
     _pass("test_level2_returns_evaluation_result")
 
@@ -106,7 +108,7 @@ def test_level2_returns_evaluation_result():
 def test_level2_race_time_is_positive():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=64.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
@@ -117,7 +119,7 @@ def test_level2_race_time_is_positive():
 def test_level2_mass_is_physical():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=64.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
@@ -129,7 +131,7 @@ def test_level2_mass_is_physical():
 def test_level2_saves_phi_snapshots():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=64.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
@@ -143,8 +145,8 @@ def test_level2_saves_phi_snapshots():
 def test_level2_smaller_W_gives_different_time():
     """Proxy time should vary with W (search space is non-trivial)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        r1 = _level2_evaluate(120.0, 64.0, 10.0, STUB_RE, 0, tmpdir, 1)
-        r2 = _level2_evaluate(140.0, 64.0, 10.0, STUB_RE, 0, tmpdir, 2)
+        r1 = _level2_evaluate(120.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 1)
+        r2 = _level2_evaluate(140.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 2)
     assert r1.race_time != r2.race_time, "Proxy should vary with W"
     _pass("test_level2_smaller_W_gives_different_time")
 
@@ -160,7 +162,7 @@ def test_level2_evolution_loop_runs_without_crashing():
     # of cells for main_body), and this test only needs to prove the call path
     # doesn't crash, not exercise full convergence.
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = _level2_evaluate(130.0, 70.0, 10.0, STUB_RE, n_iters=2, output_dir=tmpdir, eval_id=1)
+        result = _level2_evaluate(130.0, 46.0, 10.0, STUB_RE, n_iters=2, output_dir=tmpdir, eval_id=1)
     assert result.lifecycle == "valid_simulated", f"lifecycle={result.lifecycle}"
     _pass("test_level2_evolution_loop_runs_without_crashing")
 
@@ -170,7 +172,7 @@ def test_level2_evolution_loop_runs_without_crashing():
 def test_warm_start_none_when_no_results():
     config = SearchConfig(rule_envelope=STUB_RE)
     search = BayesianOuterSearch(config)
-    assert search._find_warm_start(130.0, 64.0, 50.0) is None
+    assert search._find_warm_start(130.0, 46.0, 50.0) is None
     _pass("test_warm_start_none_when_no_results")
 
 
@@ -179,10 +181,10 @@ def test_warm_start_found_for_nearby_point():
         config = SearchConfig(rule_envelope=STUB_RE, output_dir=tmpdir)
         search = BayesianOuterSearch(config)
         # Inject a fake result with snapshots close to (130, 64, 50)
-        r = _level2_evaluate(130.0, 64.0, 10.0, STUB_RE, 0, tmpdir, 1)
+        r = _level2_evaluate(130.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 1)
         search._results.append(r)
         # A nearby point should warm-start from this result
-        warm = search._find_warm_start(130.5, 64.1, 10.2)
+        warm = search._find_warm_start(130.5, 46.1, 10.2)
         if r.lifecycle == "valid_simulated":
             assert warm is not None, "Should find warm start for nearby point"
     _pass("test_warm_start_found_for_nearby_point")
@@ -192,10 +194,10 @@ def test_warm_start_none_for_distant_point():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = SearchConfig(rule_envelope=STUB_RE, output_dir=tmpdir)
         search = BayesianOuterSearch(config)
-        r = _level2_evaluate(120.0, 64.0, 10.0, STUB_RE, 0, tmpdir, 1)
+        r = _level2_evaluate(120.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 1)
         search._results.append(r)
         # A point far away should NOT warm-start
-        warm = search._find_warm_start(140.0, 64.0, 145.0)
+        warm = search._find_warm_start(140.0, 46.0, 145.0)
         assert warm is None, "Should not warm-start from a distant point"
     _pass("test_warm_start_none_for_distant_point")
 
@@ -204,7 +206,7 @@ def test_warm_start_none_for_distant_point():
 
 def test_evaluation_result_normalised_params():
     r = EvaluationResult(
-        W_mm=130.0, x_front_mm=64.0, d_halo_mm=10.0,
+        W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
         race_time=1.5, mass_kg=0.05, h_com_m=0.025, x_com_m=0.08,
         lifecycle="valid_simulated",
     )
