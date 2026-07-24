@@ -7,12 +7,20 @@ from pathlib import Path
 
 # Resolve Part 2 path: env var PART2_PATH overrides default (sibling directory).
 # This avoids hardcoded absolute paths that break on every non-developer machine.
-_part2_path = os.environ.get(
-    "PART2_PATH",
-    str(Path(__file__).resolve().parent.parent / "part2_simulation"),
+# The repo folder is "part2-simulation" (hyphen); "part2_simulation" (underscore)
+# is the spec/package name. Try both — guessing only the underscore form was the
+# single root cause of 5 failing Part 1 test files (ModuleNotFoundError:
+# mass_com_ingest), which sandbox/coarse.py had been working around by setting
+# PART2_PATH itself.
+_part2_env = os.environ.get("PART2_PATH")
+_part2_candidates = (
+    [_part2_env] if _part2_env else
+    [str(Path(__file__).resolve().parent.parent / name)
+     for name in ("part2-simulation", "part2_simulation")]
 )
-if _part2_path not in sys.path:
-    sys.path.insert(0, _part2_path)
+for _part2_path in _part2_candidates:
+    if _part2_path and _part2_path not in sys.path:
+        sys.path.insert(0, _part2_path)
 
 from mass_com_ingest import FixedHardwareSpec   # Part 2 type
 from geometry_contract import (

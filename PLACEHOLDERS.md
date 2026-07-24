@@ -8,6 +8,17 @@ original UNRESOLVED ID from the source code where applicable.
 
 ## 1. U6 — RuleEnvelope dimensions (bounding_volumes.py)
 
+> **STALE — RESOLVED (confirmed 2026-07-24 audit).** This entry says the whole
+> legal envelope is guessed. It is not. `bounding_volumes.default_rule_envelope()`
+> now carries cited regulation numbers: `z_floor_m` 1.5 mm (T3.7 track
+> clearance), `z_nose_top_m` 25 mm and `y_nose_half_m` 15 mm (T8.5.1),
+> `rearpod_max_length_m` 40 mm (T9.4.2), `z_rearpod_top_m`/`z_sidepod_top_m`/
+> `z_body_top_m` 65 mm (T3.5 ceiling). The only remaining judgement call is
+> `y_sidepod_outer_m` = 35.5 mm, and that is a documented **machinability**
+> choice inside T3.4's legal 32.5–42.5 mm range, not a missing number.
+> The STUB_RE block quoted below survives only in `test_bounding_volumes.py`.
+> The text under this line is kept for history.
+
 **Partially resolved (2026-07-11):** `y_sidepod_outer_m` should be **0.0325 m
 (32.5 mm)** — user's confirmed design target for max half-width everywhere on
 the car (the legal minimum per T3.4 is a 65mm total width / 32.5mm half-width;
@@ -55,6 +66,15 @@ placeholder envelope, not the real one.
 
 ## 2. U1 — Halo cross-section shape (fixed_hardware.py)
 
+> **PARTIALLY STALE (confirmed 2026-07-24 audit).** The "Impact" line below
+> says `place_fixed_hardware()` raises `NotImplementedError`. It does not:
+> `compute_default_fixed_hardware_inputs()` supplies a documented design
+> default for this value (see item 10), and a real production build was
+> measured emitting 4,001,824 hardware-void cells with all of them present.
+> What IS still true: the value is a legal-range starting point, not a
+> measurement. Replace it before a competition build.
+
+
 **What:** `HaloGeometry.cross_section_yz_m` — the y-z polygon vertices defining
 the halo tube's cross-sectional shape.
 
@@ -75,6 +95,15 @@ as `[(y1, z1), (y2, z2), ...]` in metres, counterclockwise.
 
 ## 3. U2 — CO2 canister position (fixed_hardware.py)
 
+> **PARTIALLY STALE (confirmed 2026-07-24 audit).** The "Impact" line below
+> says `place_fixed_hardware()` raises `NotImplementedError`. It does not:
+> `compute_default_fixed_hardware_inputs()` supplies a documented design
+> default for this value (see item 10), and a real production build was
+> measured emitting 4,001,824 hardware-void cells with all of them present.
+> What IS still true: the value is a legal-range starting point, not a
+> measurement. Replace it before a competition build.
+
+
 **What:** `canister_com_mm` — the (x, y, z) position of the CO2 canister centre
 in millimetres.
 
@@ -93,6 +122,15 @@ rule sheet.
 ---
 
 ## 4. U5 — Rear wing COM position (fixed_hardware.py)
+
+> **PARTIALLY STALE (confirmed 2026-07-24 audit).** The "Impact" line below
+> says `place_fixed_hardware()` raises `NotImplementedError`. It does not:
+> `compute_default_fixed_hardware_inputs()` supplies a documented design
+> default for this value (see item 10), and a real production build was
+> measured emitting 4,001,824 hardware-void cells with all of them present.
+> What IS still true: the value is a legal-range starting point, not a
+> measurement. Replace it before a competition build.
+
 
 **What:** `rear_wing_com_mm` — the (x, y, z) centre of mass of the rear wing.
 

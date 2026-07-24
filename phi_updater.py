@@ -631,6 +631,21 @@ def apply_adjoint_to_unified(
 
     w_aero = gradient_weights.get("w_aero", 1.0)
     w_mass = gradient_weights.get("w_mass", 1.0)
+    # w_com / w_mfg are accepted by the signature but NOT used: there is no
+    # separate COM velocity field to weight. scalar_objective_velocity already
+    # folds dT_dh_com and dT_dx_com into the single mass/COM volume velocity
+    # below, so the COM contribution rides on w_mass. Callers that set
+    # GradientWeights(w_com=1.0) expecting an independent COM channel are
+    # getting nothing from it — say so rather than let a dead knob look live.
+    if gradient_weights.get("w_com") or gradient_weights.get("w_mfg"):
+        import warnings
+        warnings.warn(
+            "apply_adjoint_to_unified: w_com/w_mfg are inert on the unified "
+            "path — the COM gradient is folded into the mass/COM velocity and "
+            "scales with w_mass; there is no manufacturing gradient field. "
+            "Set them to 0.0, or tune w_mass, until a separate COM channel exists.",
+            RuntimeWarning, stacklevel=2,
+        )
 
     # Aero velocity: splat right-half sensitivity + its y-mirror onto the field.
     vel_r = _splat_vertex_sensitivity_to_grid(sens, verts, phi)

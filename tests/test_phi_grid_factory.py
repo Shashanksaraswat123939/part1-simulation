@@ -9,7 +9,7 @@ the suite fast). See project notes for that live verification.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "part2_simulation"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "part2-simulation"))
 
 import numpy as np
 

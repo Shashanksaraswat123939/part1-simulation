@@ -157,6 +157,17 @@ class UnifiedGeometry:
         return float((xs[-1] - xs[0] + 1) * GRID_SPACING_M * 1000.0)
 
 
+# How much of the T4.2 virtual cargo may be eaten by forced-air regions before
+# the geometry is rejected. Not zero, for a structural reason: the cargo sits on
+# the track-clearance floor, and the one-cell border seal below (hard_air[:,:,0])
+# forces that bottom layer to air so the phi=0 surface always closes. Measured at
+# W=130/x_front=46/d_halo=20: 2.94% eroded, all of it that single 0.3 mm layer.
+# Anything much past that is a real placement clash with a wheel keep-clear,
+# T7.9 zone, cartridge bore or ballast slot, which would leave the mandatory
+# keep-solid volume unfilled.
+CARGO_MAX_ERODED_FRACTION = 0.05
+
+
 def _mirror_right_onto_left(a: np.ndarray) -> np.ndarray:
     """Copy the y>=0 half of `a` onto the y<0 half, in place. Returns `a`.
 
@@ -466,15 +477,40 @@ def build_unified_geometry(
         placement = cargo_placement or find_cargo_placement(
             x_front_mm, W_mm, bv.ref_plane_A_m, d_halo_mm, re.z_floor_m,
         )
+        # Clamp the cargo base to the grid floor. find_cargo_placement derives
+        # z_base from the rule envelope's z_floor + margin (0.001 m), but the
+        # grid ORIGIN is at z_floor itself (0.0015 m), so an unclamped base sat
+        # below the first cell layer and the wedge's bottom row was silently
+        # clipped by the border seal below (measured: 3.1% of cargo cells).
+        z_base = max(placement["z_base_m"], region.origin_m[2])
         hard_solid |= build_virtual_cargo_solid_mask(
             region.origin_m, region.shape,
-            placement["x_start_m"], placement["z_base_m"],
+            placement["x_start_m"], z_base,
             flip=placement.get("flip", False),
         )
 
     _mirror_right_onto_left(hard_solid)
 
     # Air wins on overlap, matching PhiGrid.build_hard_masks' resolution.
+    # This is where T4.2's MANDATORY keep-solid cargo can be silently deleted:
+    # find_cargo_placement only avoids the halo pocket, so a placement
+    # overlapping any other void (wheel keep-clear, T7.9 zones, cartridge bore,
+    # ballast slot) is eaten here with no diagnostic. PhiGrid's own overlap
+    # check is dead code by this point — the `&=` has already run. Measure the
+    # loss BEFORE resolving, and refuse to build a car that doesn't contain the
+    # cargo the regs require.
+    if with_cargo:
+        requested = int(hard_solid.sum())
+        survived = int((hard_solid & ~hard_air).sum())
+        if requested and (requested - survived) / requested > CARGO_MAX_ERODED_FRACTION:
+            raise ValueError(
+                f"virtual cargo (T4.2) is {100 * (requested - survived) / requested:.1f}% "
+                f"eroded by forced-air regions at W={W_mm}, x_front={x_front_mm}, "
+                f"d_halo={d_halo_mm} ({requested - survived}/{requested} cells). "
+                "find_cargo_placement only avoids the halo pocket; this placement "
+                "collides with another void. The car would not contain the "
+                "mandatory cargo volume."
+            )
     hard_solid &= ~hard_air
 
     phi = PhiGrid("car", region, np.zeros(region.shape, dtype=np.float32),
