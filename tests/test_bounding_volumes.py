@@ -52,8 +52,8 @@ def _make_cylinders(W_mm, x_front_mm=DEFAULT_X_FRONT_MM):
     return front, rear
 
 def test_sidepod_length_increases_with_W():
-    bv120 = compute_bounding_volumes(120.0, DEFAULT_X_FRONT_MM, 10.0, *_make_cylinders(120.0), STUB_RE)
-    bv140 = compute_bounding_volumes(140.0, DEFAULT_X_FRONT_MM, 10.0, *_make_cylinders(140.0), STUB_RE)
+    bv120 = compute_bounding_volumes(120.0, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(120.0), STUB_RE)
+    bv140 = compute_bounding_volumes(140.0, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(140.0), STUB_RE)
     assert bv140.sidepod_length_m > bv120.sidepod_length_m, (
         f"Sidepod should be longer at W=140 than W=120. "
         f"Got {bv140.sidepod_length_m:.4f} vs {bv120.sidepod_length_m:.4f}"
@@ -61,7 +61,7 @@ def test_sidepod_length_increases_with_W():
     _pass("test_sidepod_length_increases_with_W")
 
 def test_sidepod_length_positive_at_W_min():
-    bv = compute_bounding_volumes(120.0, DEFAULT_X_FRONT_MM, 10.0, *_make_cylinders(120.0), STUB_RE)
+    bv = compute_bounding_volumes(120.0, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(120.0), STUB_RE)
     assert bv.sidepod_length_m > 0, f"sidepod_length={bv.sidepod_length_m:.4f}"
     _pass("test_sidepod_length_positive_at_W_min")
 
@@ -105,7 +105,7 @@ def test_nose_width_matches_T8_5_1_not_general_body_width():
 def test_W_out_of_range_raises():
     for bad_W in [119.9, 140.1, 0.0]:
         try:
-            compute_bounding_volumes(bad_W, DEFAULT_X_FRONT_MM, 10.0, *_make_cylinders(130.0), STUB_RE)
+            compute_bounding_volumes(bad_W, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(130.0), STUB_RE)
             _fail("test_W_out_of_range_raises", f"W={bad_W} should raise")
         except ValueError:
             pass
@@ -121,7 +121,7 @@ def test_d_halo_out_of_range_raises():
 def test_x_front_out_of_range_raises():
     try:
         # x_front=30 < X_FRONT_MIN_MM=36 → should raise
-        compute_bounding_volumes(130.0, 30.0, 10.0, *_make_cylinders(130.0, 30.0), STUB_RE)
+        compute_bounding_volumes(130.0, 30.0, 20.0, *_make_cylinders(130.0, 30.0), STUB_RE)
         _fail("test_x_front_out_of_range_raises", "x_front=30 < 36 should raise")
     except ValueError:
         _pass("test_x_front_out_of_range_raises")
@@ -132,14 +132,14 @@ def test_x_front_above_t8_2_nose_overhang_raises():
     # old X_FRONT_MIN_MM=61 floor, which put the ENTIRE search range above
     # this ceiling -- every car it could propose violated T8.2.
     try:
-        compute_bounding_volumes(130.0, 60.0, 10.0, *_make_cylinders(130.0, 60.0), STUB_RE)
+        compute_bounding_volumes(130.0, 60.0, 20.0, *_make_cylinders(130.0, 60.0), STUB_RE)
         _fail("test_x_front_above_t8_2_nose_overhang_raises",
               "x_front=60 gives a 44mm nose overhang, above T8.2's 40mm max")
     except ValueError:
         _pass("test_x_front_above_t8_2_nose_overhang_raises")
 
 def test_all_shapes_are_positive_ints():
-    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 15.0, *_make_cylinders(130.0), STUB_RE)
+    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(130.0), STUB_RE)
     for comp in ("nose", "sidepod", "rearpod", "main_body"):
         region = bv.get(comp)
         for dim in region.shape:
@@ -155,7 +155,7 @@ def test_rearpod_origin_x_clears_rear_wheel():
     did)."""
     from geometry_contract import WHEEL_X_CLEARANCE_HALF_WIDTH_M
     x_front_mm = DEFAULT_X_FRONT_MM
-    bv = compute_bounding_volumes(130.0, x_front_mm, 15.0, *_make_cylinders(130.0), STUB_RE)
+    bv = compute_bounding_volumes(130.0, x_front_mm, 20.0, *_make_cylinders(130.0), STUB_RE)
     expected = mm_to_m(x_front_mm + 130.0) + WHEEL_X_CLEARANCE_HALF_WIDTH_M
     assert abs(bv.rearpod.origin_m[0] - expected) < 1e-9, (
         f"Rearpod origin x={bv.rearpod.origin_m[0]:.6f}, expected {expected:.6f}"
@@ -165,7 +165,7 @@ def test_rearpod_origin_x_clears_rear_wheel():
 def test_main_body_origin_x_equals_ref_plane_A():
     """Main body starts at Ref Plane A = x_front - 16 mm."""
     x_front_mm = DEFAULT_X_FRONT_MM
-    bv = compute_bounding_volumes(130.0, x_front_mm, 15.0, *_make_cylinders(130.0), STUB_RE)
+    bv = compute_bounding_volumes(130.0, x_front_mm, 20.0, *_make_cylinders(130.0), STUB_RE)
     expected = mm_to_m(x_front_mm - 16.0)
     assert abs(bv.main_body.origin_m[0] - expected) < 1e-9, (
         f"Main body origin x={bv.main_body.origin_m[0]:.6f}, expected {expected:.6f}"
@@ -173,21 +173,21 @@ def test_main_body_origin_x_equals_ref_plane_A():
     _pass("test_main_body_origin_x_equals_ref_plane_A")
 
 def test_sidepod_is_right_half_only():
-    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 15.0, *_make_cylinders(130.0), STUB_RE)
+    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(130.0), STUB_RE)
     assert bv.sidepod.origin_m[1] >= 0.0, (
         f"Sidepod y origin={bv.sidepod.origin_m[1]:.4f} --- should be >= 0 (right half only)"
     )
     _pass("test_sidepod_is_right_half_only")
 
 def test_bounding_volumes_stores_x_front():
-    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 15.0, *_make_cylinders(130.0), STUB_RE)
+    bv = compute_bounding_volumes(130.0, DEFAULT_X_FRONT_MM, 20.0, *_make_cylinders(130.0), STUB_RE)
     assert bv.x_front_mm == DEFAULT_X_FRONT_MM
     assert abs(bv.x_front_m - mm_to_m(DEFAULT_X_FRONT_MM)) < 1e-12
     _pass("test_bounding_volumes_stores_x_front")
 
 def test_ref_plane_properties():
     x_front_mm = DEFAULT_X_FRONT_MM
-    bv = compute_bounding_volumes(130.0, x_front_mm, 15.0, *_make_cylinders(130.0), STUB_RE)
+    bv = compute_bounding_volumes(130.0, x_front_mm, 20.0, *_make_cylinders(130.0), STUB_RE)
     assert abs(bv.ref_plane_A_m - mm_to_m(x_front_mm - 16.0)) < 1e-9
     assert abs(bv.ref_plane_B_m - mm_to_m(x_front_mm + 130.0 + 16.0)) < 1e-9
     _pass("test_ref_plane_properties")

@@ -511,8 +511,19 @@ def build_unified_geometry(
         interior[0, :, :] = interior[-1, :, :] = False
         interior[:, 0, :] = interior[:, -1, :] = False
         interior[:, :, 0] = interior[:, :, -1] = False
+        # T4.2 verbatim: the cargo "may coincide with the legal ballast
+        # container but not the halo pocket". So ballast overlap is LEGAL and
+        # must not count as erosion -- the ballast slot simply wins the cell
+        # (it is mandatory empty). This matters now that the cargo sits at
+        # 14..24 mm directly under the halo: the ballast slot occupies
+        # 17.65..24 mm, so the two overlap by 6.35 mm BY DESIGN. Without this
+        # exemption the guard would reject every car.
+        allowed = build_ballast_container_forbidden_mask(
+            region.origin_m, region.shape, bv.ref_plane_A_m, d_halo_mm,
+        )
+        _mirror_right_onto_left(allowed)
         requested = int((hard_solid & interior).sum())
-        eaten = int((hard_solid & hard_air & interior).sum())
+        eaten = int((hard_solid & hard_air & interior & ~allowed).sum())
         if requested and eaten / requested > CARGO_MAX_ERODED_FRACTION:
             raise ValueError(
                 f"virtual cargo (T4.2) is {100 * eaten / requested:.1f}% eroded by "

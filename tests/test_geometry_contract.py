@@ -82,30 +82,57 @@ def test_validate_W_invalid():
     _pass("test_validate_W_invalid")
 
 def test_validate_d_halo_valid():
-    # K-5 fix: upper bound is W-34 mm, strict/exclusive (placement-derived --
-    # was min(100, W+16), which allowed candidates Part 1's hardware
-    # placement check rejected). At W=130: bound is 96.0 mm.
-    gc.validate_d_halo(0.0, 130.0)
+    # Range is [16, W-34), both bounds physical:
+    #   16     = pocket FRONT edge on the front axle line (forward-most travel;
+    #            Ref Plane A sits 16 mm ahead of the axle, so d_halo=16 puts the
+    #            pocket front exactly on it). Was 0, which allowed the halo up to
+    #            16 mm AHEAD of the front axle.
+    #   W-34   = pocket REAR edge must not reach the rear axle. At W=130: 96.0,
+    #            strict/exclusive.
+    gc.validate_d_halo(16.0, 130.0)
     gc.validate_d_halo(95.99, 130.0)
     _pass("test_validate_d_halo_valid")
 
 def test_validate_d_halo_invalid():
-    try:
-        gc.validate_d_halo(96.0, 130.0)   # W-34=96, strict upper bound -- 96.0 itself is invalid
-        _fail("test_validate_d_halo_invalid", "should have raised")
-    except ValueError:
-        pass
-    try:
-        gc.validate_d_halo(100.1, 130.0)
-        _fail("test_validate_d_halo_invalid", "should have raised")
-    except ValueError:
-        pass
-    try:
-        gc.validate_d_halo(-1.0, 130.0)
-        _fail("test_validate_d_halo_invalid", "should have raised")
-    except ValueError:
-        pass
+    for bad in (
+        96.0,    # W-34 = 96, strict upper bound -- 96.0 itself is invalid
+        100.1,
+        -1.0,
+        0.0,     # below the forward-most physical position
+        15.99,   # just below it
+    ):
+        try:
+            gc.validate_d_halo(bad, 130.0)
+            _fail("test_validate_d_halo_invalid", f"{bad} should have raised")
+        except ValueError:
+            pass
     _pass("test_validate_d_halo_invalid")
+
+def test_d_halo_forward_limit_puts_pocket_front_on_the_front_axle():
+    """d_halo_min is not a tuning value -- it is fixed by the geometry."""
+    x_front_mm = 46.0
+    ref_A_mm = x_front_mm - gc.D_HALO_REF_A_OFFSET_MM
+    pocket_front_mm = ref_A_mm + gc.calibrate_d_halo_min_mm()
+    assert abs(pocket_front_mm - x_front_mm) < 1e-9, (
+        f"at d_halo_min the pocket front is at {pocket_front_mm} mm, "
+        f"expected the front axle line at {x_front_mm} mm"
+    )
+    _pass("test_d_halo_forward_limit_puts_pocket_front_on_the_front_axle")
+
+def test_d_halo_rear_limit_honours_the_canister_when_supplied():
+    """Rear bound = min(axle bound, canister bound); canister wins when tighter."""
+    W, x_front = 140.0, 46.0
+    axle_only = gc.calibrate_d_halo_max_mm(W)
+    # A canister far forward must tighten the bound below the axle limit.
+    tight = gc.calibrate_d_halo_max_mm(W, canister_front_x_mm=140.0, x_front_mm=x_front)
+    assert tight < axle_only, f"canister bound {tight} did not tighten {axle_only}"
+    # pocket rear at the canister front face, exactly
+    ref_A = x_front - gc.D_HALO_REF_A_OFFSET_MM
+    assert abs((ref_A + tight + gc.D_HALO_POCKET_LENGTH_MM) - 140.0) < 1e-9
+    # A canister far aft must NOT loosen it past the axle bound.
+    loose = gc.calibrate_d_halo_max_mm(W, canister_front_x_mm=900.0, x_front_mm=x_front)
+    assert loose == axle_only, f"{loose} != {axle_only}"
+    _pass("test_d_halo_rear_limit_honours_the_canister_when_supplied")
 
 def test_calibrate_d_halo_max_scales_with_W():
     """K-5 fix: bound is W-34 mm (placement-derived, strict/exclusive),
@@ -189,6 +216,8 @@ if __name__ == "__main__":
     test_validate_W_invalid()
     test_validate_d_halo_valid()
     test_validate_d_halo_invalid()
+    test_d_halo_forward_limit_puts_pocket_front_on_the_front_axle()
+    test_d_halo_rear_limit_honours_the_canister_when_supplied()
     test_calibrate_d_halo_max_scales_with_W()
     test_halo_z_min()
     test_lifecycle_states_count()

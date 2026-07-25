@@ -94,21 +94,21 @@ def test_is_valid_rejects_d_halo_too_large():
 def test_level2_returns_evaluation_result():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=20.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
     assert isinstance(result, EvaluationResult)
     assert result.W_mm == 130.0
     assert result.x_front_mm == 46.0
-    assert result.d_halo_mm == 10.0
+    assert result.d_halo_mm == 20.0
     _pass("test_level2_returns_evaluation_result")
 
 
 def test_level2_race_time_is_positive():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=20.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
@@ -119,7 +119,7 @@ def test_level2_race_time_is_positive():
 def test_level2_mass_is_physical():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=20.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
@@ -131,7 +131,7 @@ def test_level2_mass_is_physical():
 def test_level2_saves_phi_snapshots():
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _level2_evaluate(
-            W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
+            W_mm=130.0, x_front_mm=46.0, d_halo_mm=20.0,
             rule_envelope=STUB_RE, n_iters=0,
             output_dir=tmpdir, eval_id=1,
         )
@@ -145,8 +145,8 @@ def test_level2_saves_phi_snapshots():
 def test_level2_smaller_W_gives_different_time():
     """Proxy time should vary with W (search space is non-trivial)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        r1 = _level2_evaluate(120.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 1)
-        r2 = _level2_evaluate(140.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 2)
+        r1 = _level2_evaluate(120.0, 46.0, 20.0, STUB_RE, 0, tmpdir, 1)
+        r2 = _level2_evaluate(140.0, 46.0, 20.0, STUB_RE, 0, tmpdir, 2)
     assert r1.race_time != r2.race_time, "Proxy should vary with W"
     _pass("test_level2_smaller_W_gives_different_time")
 
@@ -162,7 +162,7 @@ def test_level2_evolution_loop_runs_without_crashing():
     # of cells for main_body), and this test only needs to prove the call path
     # doesn't crash, not exercise full convergence.
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = _level2_evaluate(130.0, 46.0, 10.0, STUB_RE, n_iters=2, output_dir=tmpdir, eval_id=1)
+        result = _level2_evaluate(130.0, 46.0, 20.0, STUB_RE, n_iters=2, output_dir=tmpdir, eval_id=1)
     assert result.lifecycle == "valid_simulated", f"lifecycle={result.lifecycle}"
     _pass("test_level2_evolution_loop_runs_without_crashing")
 
@@ -181,7 +181,7 @@ def test_warm_start_found_for_nearby_point():
         config = SearchConfig(rule_envelope=STUB_RE, output_dir=tmpdir)
         search = BayesianOuterSearch(config)
         # Inject a fake result with snapshots close to (130, 64, 50)
-        r = _level2_evaluate(130.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 1)
+        r = _level2_evaluate(130.0, 46.0, 20.0, STUB_RE, 0, tmpdir, 1)
         search._results.append(r)
         # A nearby point should warm-start from this result
         warm = search._find_warm_start(130.5, 46.1, 10.2)
@@ -194,7 +194,7 @@ def test_warm_start_none_for_distant_point():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = SearchConfig(rule_envelope=STUB_RE, output_dir=tmpdir)
         search = BayesianOuterSearch(config)
-        r = _level2_evaluate(120.0, 46.0, 10.0, STUB_RE, 0, tmpdir, 1)
+        r = _level2_evaluate(120.0, 46.0, 20.0, STUB_RE, 0, tmpdir, 1)
         search._results.append(r)
         # A point far away should NOT warm-start
         warm = search._find_warm_start(140.0, 46.0, 145.0)
@@ -206,7 +206,7 @@ def test_warm_start_none_for_distant_point():
 
 def test_evaluation_result_normalised_params():
     r = EvaluationResult(
-        W_mm=130.0, x_front_mm=46.0, d_halo_mm=10.0,
+        W_mm=130.0, x_front_mm=46.0, d_halo_mm=20.0,
         race_time=1.5, mass_kg=0.05, h_com_m=0.025, x_com_m=0.08,
         lifecycle="valid_simulated",
     )

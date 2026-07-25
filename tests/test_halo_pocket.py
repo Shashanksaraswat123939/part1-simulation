@@ -58,7 +58,7 @@ def test_forbidden_mask_marks_pocket_cells():
     ref_A_m = 0.05
     origin = (ref_A_m, -0.03, 0.0)
     shape = (300, 200, 200)   # covers x to ref_A+90mm, y +/-30mm, z 0-60mm
-    mask = build_halo_pocket_forbidden_mask(origin, shape, ref_A_m, d_halo_mm=10.0)
+    mask = build_halo_pocket_forbidden_mask(origin, shape, ref_A_m, d_halo_mm=20.0)
     # Cell at pocket centre: x=ref_A+10+25mm, y=0, z=25mm (inside 24-27.175mm floor band)
     xi = round((mm_to_m(10.0 + 25.0)) / GRID_SPACING_M)
     yi = round((0.03) / GRID_SPACING_M)   # y=0 -> index for origin y=-0.03
@@ -71,7 +71,7 @@ def test_forbidden_mask_clear_outside_pocket_z():
     ref_A_m = 0.05
     origin = (ref_A_m, -0.03, 0.0)
     shape = (300, 200, 200)
-    mask = build_halo_pocket_forbidden_mask(origin, shape, ref_A_m, d_halo_mm=10.0)
+    mask = build_halo_pocket_forbidden_mask(origin, shape, ref_A_m, d_halo_mm=20.0)
     # Cell well below the pocket floor (z=5mm) should be clear
     xi = round((mm_to_m(10.0 + 25.0)) / GRID_SPACING_M)
     yi = round((0.03) / GRID_SPACING_M)
@@ -102,10 +102,10 @@ def test_d_halo_changes_bounding_volumes_end_to_end():
     front = _StubCyl(mm_to_m(x_front_mm), 0.0, 0.015, 0.017, 0.008)
     rear = _StubCyl(mm_to_m(x_front_mm + W_mm), 0.0, 0.015, 0.017, 0.008)
 
-    bv_10 = compute_bounding_volumes(W_mm, x_front_mm, 10.0, front, rear, STUB_RE)
+    bv_20 = compute_bounding_volumes(W_mm, x_front_mm, 20.0, front, rear, STUB_RE)
     bv_50 = compute_bounding_volumes(W_mm, x_front_mm, 50.0, front, rear, STUB_RE)
 
-    mask_10 = bv_10.main_body.valid_mask()
+    mask_10 = bv_20.main_body.valid_mask()
     mask_50 = bv_50.main_body.valid_mask()
     assert not np.array_equal(mask_10, mask_50), (
         "Different d_halo values must produce different main_body geometry"

@@ -25,6 +25,7 @@ S1 accepts mm inputs via unit helpers and converts.
 
 from __future__ import annotations
 import math
+from typing import Optional
 
 # ── Coordinate system labels ───────────────────────────────────────────────
 AXIS_X: str = "front_to_rear"
@@ -299,25 +300,70 @@ D_HALO_REF_A_OFFSET_MM: float = 16.0   # Ref Plane A is 16mm ahead of front axle
 # fixed_hardware._validate_halo_position uses ">=" so the limit is strict.
 _D_HALO_PLACEMENT_MARGIN_MM: float = D_HALO_POCKET_LENGTH_MM - D_HALO_REF_A_OFFSET_MM  # 34 mm
 
-def calibrate_d_halo_max_mm(W_mm: float) -> float:
-    """
-    Return the exclusive d_halo upper bound for the given wheelbase.
+# --- d_halo travel limits, physical (project owner, 2026-07-24) ------------
+# d_halo is measured from Ref Plane A to the halo pocket's FRONT edge. Its
+# travel is bounded by where the halo can physically go:
+#
+#   FORWARD-most : pocket front edge on the FRONT AXLE LINE.
+#                  pocket_front = x_front, and pocket_front = ref_A + d_halo
+#                  with ref_A = x_front - 16, so d_halo = 16 mm. Exactly.
+#                  Independent of W. Replaces the old floor of 0, which put the
+#                  halo up to 16 mm AHEAD of the front axle.
+#   REARWARD-most : pocket REAR edge touching the CO2 canister.
+#                  d_halo = (canister_front_x - 50) - ref_A.
+#
+# ⚠ The rearward bound is PROVISIONAL. It currently references the cartridge
+# BORE front face (rear_face - bore_depth). The halo is specified to loft to a
+# minimum-SAFETY-ZONE block around the canister, and that block does not exist
+# in the model yet -- once it does, point D_HALO_REAR_REFERENCE at its front
+# face. The safety zone is forward of the bore front, so this bound will get
+# SMALLER, never larger; nothing built against it becomes illegal.
+D_HALO_MIN_MM: float = D_HALO_REF_A_OFFSET_MM   # 16.0 — pocket front on front axle
 
-    Derived from the halo pocket placement constraint (see constants above):
-        d_halo < W - 34 mm
 
-    For W in [120, 140] this gives [86, 106) mm — substantially tighter than
-    the previous min(100, W+16) which allowed values the placement check rejects.
-    The returned value is the STRICT upper bound (d_halo must be < this value).
+def calibrate_d_halo_min_mm() -> float:
+    """Forward-most halo position: pocket front edge on the front axle line."""
+    return D_HALO_MIN_MM
+
+
+def calibrate_d_halo_max_mm(W_mm: float, canister_front_x_mm: Optional[float] = None,
+                            x_front_mm: Optional[float] = None) -> float:
     """
-    return W_mm - _D_HALO_PLACEMENT_MARGIN_MM
+    Return the exclusive d_halo upper bound.
+
+    With canister_front_x_mm and x_front_mm supplied, this is the PHYSICAL
+    limit the project owner specified: the pocket's rear edge touching the
+    canister (its minimum safety zone once that exists) --
+        d_halo_max = (canister_front_x - POCKET_LENGTH) - ref_A
+                   = canister_front_x - 50 - (x_front - 16)
+
+    Without them it falls back to the older placement-derived bound
+    `W - 34` (pocket rear must not reach the rear axle), which every existing
+    caller and test still uses. Both are returned as STRICT upper bounds.
+    The effective limit is the MINIMUM of the two -- the halo may neither reach
+    the canister nor the rear axle.
+    """
+    axle_bound = W_mm - _D_HALO_PLACEMENT_MARGIN_MM
+    if canister_front_x_mm is None or x_front_mm is None:
+        return axle_bound
+    ref_A_mm = x_front_mm - D_HALO_REF_A_OFFSET_MM
+    canister_bound = canister_front_x_mm - D_HALO_POCKET_LENGTH_MM - ref_A_mm
+    return min(axle_bound, canister_bound)
+
 
 def validate_d_halo(d_halo_mm: float, W_mm: float) -> None:
-    """Raise ValueError if d_halo is outside [0, W-34) mm (strict upper bound)."""
+    """Raise ValueError if d_halo is outside [16, W-34) mm (strict upper bound).
+
+    Lower bound is the forward-most physical position (pocket front on the
+    front axle line), not 0 -- see D_HALO_MIN_MM.
+    """
     d_max = calibrate_d_halo_max_mm(W_mm)
-    if not (0.0 <= d_halo_mm < d_max):
+    if not (D_HALO_MIN_MM <= d_halo_mm < d_max):
         raise ValueError(
             f"d_halo={d_halo_mm} mm is outside allowed range "
-            f"[0.0, {d_max:.1f}) mm for W={W_mm} mm. "
-            f"Upper bound is W-34 mm (placement-derived: pocket rear must not reach rear axle)."
+            f"[{D_HALO_MIN_MM}, {d_max:.1f}) mm for W={W_mm} mm. "
+            f"Lower bound {D_HALO_MIN_MM} mm = halo pocket front edge on the front "
+            f"axle line (forward-most physical position). "
+            f"Upper bound is W-34 mm (pocket rear must not reach the rear axle); "
+            f"the canister/safety-zone limit applies on top of it."
         )

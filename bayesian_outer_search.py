@@ -12,7 +12,9 @@ Implements the three-level optimization structure described in 01_generative_geo
 Search space:
   W        ∈ [120, 140] mm          wheelbase (T7.3)
   x_front  ∈ [61, 207-W] mm        front axle from nose tip (W-dependent upper bound)
-  d_halo   ∈ [0,  W+16]  mm        halo offset from Ref Plane A (W-dependent upper bound)
+  d_halo   ∈ [16, W-34)  mm        halo offset from Ref Plane A. 16 = pocket
+                                   front on the front axle line (forward-most);
+                                   W-34 = pocket rear short of the rear axle.
 
 BoTorch operates in a unit [0,1]^3 normalised space. Parameters are de-normalised
 per evaluation using their W-dependent bounds. Samples that violate derived constraints
@@ -60,7 +62,7 @@ if _part3_path not in sys.path:
 # ── Geometry imports ───────────────────────────────────────────────────────────
 from geometry_contract import (
     W_MIN_MM, W_MAX_MM, X_FRONT_MIN_MM, X_FRONT_ABS_MAX_MM,
-    calibrate_x_front_bounds, calibrate_d_halo_max_mm,
+    calibrate_x_front_bounds, calibrate_d_halo_max_mm, D_HALO_MIN_MM,
     validate_W, validate_x_front, validate_d_halo,
     mm_to_m, CO2_MASS_KG, R_WHEEL_M, WHEEL_CLEARANCE_M,
     WHEEL_X_CLEARANCE_HALF_WIDTH_M,
@@ -218,7 +220,10 @@ def _abs_bounds() -> tuple[tuple[float, float], tuple[float, float], tuple[float
     return (
         (W_MIN_MM,         W_MAX_MM),
         (X_FRONT_MIN_MM,   X_FRONT_ABS_MAX_MM),
-        (0.0,              calibrate_d_halo_max_mm(W_MAX_MM)),
+        # Lower bound is D_HALO_MIN_MM (16 mm), NOT 0: 0 would put the halo
+        # pocket up to 16 mm AHEAD of the front axle. 16 mm puts its front
+        # edge exactly on the axle line -- the forward-most physical travel.
+        (D_HALO_MIN_MM,    calibrate_d_halo_max_mm(W_MAX_MM)),
     )
 
 
@@ -1014,7 +1019,7 @@ class BayesianOuterSearch:
         # (K-5: placement-derived W-34, not the stale W+16). Clip to a hair
         # under it so the clamped value still passes validate_d_halo's "<".
         dh_hi      = calibrate_d_halo_max_mm(W_mm) - 1e-6
-        d_halo_mm  = float(np.clip(d_halo_mm,  0.0,         dh_hi))
+        d_halo_mm  = float(np.clip(d_halo_mm,  D_HALO_MIN_MM, dh_hi))
 
         warm = self._find_warm_start(W_mm, x_front_mm, d_halo_mm)
 

@@ -151,7 +151,7 @@ def test_level2_evaluate_real_calls_part3_and_returns_real_T():
         _real_bindings_cache[id(cfg)] = fake_bindings
 
         result = _level2_evaluate(
-            130.0, 46.0, 10.0,
+            130.0, 46.0, 20.0,
             rule_envelope=default_rule_envelope(),
             n_iters=0, output_dir=tmpdir, eval_id=1,
             search_config=cfg,
@@ -212,7 +212,7 @@ def test_proxy_path_unaffected_when_search_config_omitted():
     from bounding_volumes import default_rule_envelope
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = _level2_evaluate(130.0, 46.0, 10.0, default_rule_envelope(), 0, tmpdir, 1)
+        result = _level2_evaluate(130.0, 46.0, 20.0, default_rule_envelope(), 0, tmpdir, 1)
         assert result.lifecycle == "valid_simulated"
         assert result.mass_kg > 0.0  # proxy path always computes a real mass from phi grids
     _pass("test_proxy_path_unaffected_when_search_config_omitted")

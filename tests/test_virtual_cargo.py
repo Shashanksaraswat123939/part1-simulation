@@ -16,18 +16,52 @@ def _pass(n): print(f"PASS {n}")
 def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
 
 
-def test_placement_avoids_halo_pocket():
-    """Chosen cargo x-range must not overlap the halo pocket's x-range."""
+def test_placement_never_shares_volume_with_the_halo_pocket():
+    """T4.2: the cargo must not COINCIDE with the halo pocket.
+
+    Coincidence is a 3-D question. Since 2026-07-24 the cargo is pinned to
+    14..24 mm (top face on the pocket floor) and the pocket floor is 24 mm, so
+    the two are z-disjoint and cannot share volume at ANY x -- the cargo is
+    specified to sit directly BENEATH the halo. This test therefore checks the
+    thing the reg actually forbids (shared volume), not the x-only proxy it
+    used to check, which forbade the intended placement and cost 42% of the
+    legal d_halo range.
+    """
     from halo_pocket import compute_halo_pocket_box_m
-    x_front_mm, W_mm, d_halo_mm = 70.0, 130.0, 10.0
+    from virtual_cargo import CARGO_Z_BASE_M
+    x_front_mm, W_mm, d_halo_mm = 70.0, 130.0, 20.0
     ref_A_m = mm_to_m(x_front_mm - 16.0)
     result = find_cargo_placement(x_front_mm, W_mm, ref_A_m, d_halo_mm, z_floor_m=0.0)
     halo_box = compute_halo_pocket_box_m(ref_A_m, d_halo_mm)
-    cargo_x_min = result["x_start_m"]
-    cargo_x_max = cargo_x_min + mm_to_m(CARGO_LENGTH_MM)
-    overlap = cargo_x_min < halo_box["x_max_m"] and halo_box["x_min_m"] < cargo_x_max
-    assert not overlap, "Cargo placement must not overlap halo pocket"
-    _pass("test_placement_avoids_halo_pocket")
+
+    cargo_x = (result["x_start_m"], result["x_start_m"] + mm_to_m(CARGO_LENGTH_MM))
+    cargo_z = (CARGO_Z_BASE_M, CARGO_Z_BASE_M + mm_to_m(CARGO_HEIGHT_MM))
+    ox = cargo_x[0] < halo_box["x_max_m"] and halo_box["x_min_m"] < cargo_x[1]
+    oz = cargo_z[0] < halo_box["z_max_m"] and halo_box["z_min_m"] < cargo_z[1]
+    assert not (ox and oz), (
+        f"cargo x{cargo_x} z{cargo_z} shares volume with the halo pocket "
+        f"x[{halo_box['x_min_m']}, {halo_box['x_max_m']}] "
+        f"z[{halo_box['z_min_m']}, {halo_box['z_max_m']}]"
+    )
+    assert not oz, "cargo and halo pocket must stay z-disjoint (top face at 24 mm)"
+    _pass("test_placement_never_shares_volume_with_the_halo_pocket")
+
+
+def test_cargo_sits_directly_under_the_halo():
+    """z is FIXED: top face on the halo pocket floor, 14..24 mm above track."""
+    from virtual_cargo import CARGO_Z_BASE_MM, CARGO_TOP_Z_MM
+    from geometry_contract import HALO_MIN_Z_MM
+    assert CARGO_TOP_Z_MM == HALO_MIN_Z_MM, (
+        f"cargo top {CARGO_TOP_Z_MM} must equal the halo pocket floor {HALO_MIN_Z_MM}"
+    )
+    assert abs(CARGO_TOP_Z_MM - CARGO_Z_BASE_MM - CARGO_HEIGHT_MM) < 1e-9
+    # z must NOT follow the rule-envelope floor any more, whatever is passed in.
+    a = find_cargo_placement(70.0, 130.0, mm_to_m(54.0), 20.0, z_floor_m=0.0)
+    b = find_cargo_placement(70.0, 130.0, mm_to_m(54.0), 20.0, z_floor_m=0.05)
+    assert a["z_base_m"] == b["z_base_m"] == mm_to_m(CARGO_Z_BASE_MM), (
+        f"cargo z must be pinned under the halo, got {a['z_base_m']} / {b['z_base_m']}"
+    )
+    _pass("test_cargo_sits_directly_under_the_halo")
 
 
 def test_placement_within_axle_corridor():
@@ -49,28 +83,42 @@ def test_placement_defaults_to_corridor_centre_when_no_conflict():
     _pass("test_placement_defaults_to_corridor_centre_when_no_conflict")
 
 
-def test_placement_shifts_when_default_collides():
-    """When the halo pocket sits at the corridor centre, placement must shift away."""
+def test_placement_no_longer_shifts_for_a_centred_halo():
+    """INVERTED 2026-07-24, deliberately.
+
+    This used to assert the cargo shifts away when the halo pocket sits at the
+    corridor centre. That behaviour is gone on purpose: the cargo is now pinned
+    to 14..24 mm, z-disjoint from the pocket (floor 24 mm), so sitting under the
+    halo shares no volume and T4.2 permits it. Keeping the old x-only screen
+    made the specified placement -- directly beneath the halo -- impossible, and
+    cost 42% of the legal d_halo range at W=130/x_front=46.
+    """
     x_front_mm, W_mm = 70.0, 140.0
     x_front_m, W_m = mm_to_m(x_front_mm), mm_to_m(W_mm)
     ref_A_m = mm_to_m(x_front_mm - 16.0)
     corridor_centre_m = x_front_m + W_m / 2.0
-    # Choose d_halo so the halo pocket starts right at the corridor centre
     d_halo_mm = (corridor_centre_m - ref_A_m) * 1000.0
     result = find_cargo_placement(x_front_mm, W_mm, ref_A_m, d_halo_mm, z_floor_m=0.0)
-    assert result["collided_with_default"], "Expected placement to shift away from centred halo"
-    _pass("test_placement_shifts_when_default_collides")
+    assert not result["collided_with_default"], (
+        "cargo should stay at the corridor centre under the halo; the x-only "
+        "halo screen should no longer apply while the two are z-disjoint"
+    )
+    _pass("test_placement_no_longer_shifts_for_a_centred_halo")
 
 
-def test_placement_raises_when_impossible():
-    """Halo occupying the middle of a too-tight corridor leaves no room for cargo."""
-    x_front_mm, W_mm, d_halo_mm = 64.0, 130.0, 50.0
-    ref_A_m = mm_to_m(x_front_mm - 16.0)
+def test_placement_still_raises_when_the_corridor_itself_is_too_short():
+    """The corridor length check survives -- it is independent of the halo.
+
+    The old 'halo splits the corridor' failure is gone (see the test above), so
+    the remaining way to have no placement is a wheelbase too short to hold the
+    60 mm cargo between the axle centre lines at all.
+    """
     try:
-        find_cargo_placement(x_front_mm, W_mm, ref_A_m, d_halo_mm, z_floor_m=0.0)
-        _fail("test_placement_raises_when_impossible", "should have raised ValueError")
+        find_cargo_placement(70.0, 50.0, mm_to_m(54.0), 20.0, z_floor_m=0.0)
+        _fail("test_placement_still_raises_when_the_corridor_itself_is_too_short",
+              "should have raised ValueError")
     except ValueError:
-        _pass("test_placement_raises_when_impossible")
+        _pass("test_placement_still_raises_when_the_corridor_itself_is_too_short")
 
 
 def test_solid_mask_wide_end_is_wider_than_narrow_end():
@@ -118,11 +166,12 @@ def test_regs_dimensions_unchanged():
 
 
 if __name__ == "__main__":
-    test_placement_avoids_halo_pocket()
+    test_placement_never_shares_volume_with_the_halo_pocket()
+    test_cargo_sits_directly_under_the_halo()
     test_placement_within_axle_corridor()
     test_placement_defaults_to_corridor_centre_when_no_conflict()
-    test_placement_shifts_when_default_collides()
-    test_placement_raises_when_impossible()
+    test_placement_no_longer_shifts_for_a_centred_halo()
+    test_placement_still_raises_when_the_corridor_itself_is_too_short()
     test_solid_mask_wide_end_is_wider_than_narrow_end()
     test_solid_mask_respects_height()
     test_regs_dimensions_unchanged()

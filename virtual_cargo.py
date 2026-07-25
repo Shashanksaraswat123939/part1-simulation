@@ -22,13 +22,30 @@ from __future__ import annotations
 from typing import Callable, Optional
 import numpy as np
 
-from geometry_contract import GRID_SPACING_M, mm_to_m
+from geometry_contract import GRID_SPACING_M, HALO_MIN_Z_MM, mm_to_m
 from halo_pocket import compute_halo_pocket_box_m
 
 CARGO_LENGTH_MM: float = 60.0        # T4.2
 CARGO_WIDE_WIDTH_MM: float = 55.0    # T4.2, wide end
 CARGO_NARROW_WIDTH_MM: float = 10.0  # T4.2, narrow end
 CARGO_HEIGHT_MM: float = 10.0        # T4.2, constant along the whole length
+
+# Cargo z is FIXED, directly beneath the halo: its TOP face sits at the halo
+# pocket floor (24 mm, HALO_MIN_Z_MM, pinned by T4.4.4), so the block spans
+# 14..24 mm above the track. Set by the project owner 2026-07-24.
+#
+# It was previously pinned to the BOTTOM of the car (z_floor + 1 mm = 2.5 mm,
+# spanning 2.5..12.5 mm) on the reasoning that a lower COM is never worse. That
+# is not where the part actually is: the cargo sits under the halo. Consequence
+# to be aware of -- this RAISES h_com, and dT/dh_com is negative, so the change
+# is not free; it is a correction to the physical model, not an optimisation.
+#
+# The block is also centred laterally (y symmetric about the centreline, which
+# build_virtual_cargo_solid_mask already does). The ONLY design freedoms are
+# fore-aft position and the fore-aft flip.
+CARGO_TOP_Z_MM: float = HALO_MIN_Z_MM
+CARGO_Z_BASE_MM: float = CARGO_TOP_Z_MM - CARGO_HEIGHT_MM   # 14.0 mm
+CARGO_Z_BASE_M: float = mm_to_m(CARGO_Z_BASE_MM)
 
 N_CANDIDATE_POSITIONS: int = 9       # scan this many evenly-spaced start positions
 
@@ -127,6 +144,24 @@ def find_cargo_placement(
 
     halo_box = compute_halo_pocket_box_m(ref_plane_A_m, d_halo_mm)
 
+    # T4.2 forbids the cargo COINCIDING with the halo pocket -- i.e. sharing
+    # volume. Coincidence is a 3-D question, and since 2026-07-24 the cargo is
+    # pinned to 14..24 mm with the pocket floor at 24 mm, so the two are
+    # z-DISJOINT (they abut at exactly 24 mm) and cannot share volume at ANY x.
+    #
+    # Screening on x alone would therefore be over-restrictive to the point of
+    # self-contradiction: the cargo is specified to sit directly BENEATH the
+    # halo, so forbidding it from sharing the halo's x-range forbids the very
+    # placement the spec asks for. Measured cost of the old x-only screen at
+    # W=130/x_front=46: d_halo 36..75 mm unbuildable, 42% of the legal range.
+    #
+    # Computed, not hardcoded, so re-pinning the cargo z or the pocket floor
+    # automatically restores the x-screen if they ever overlap again.
+    cargo_z_lo, cargo_z_hi = CARGO_Z_BASE_M, CARGO_Z_BASE_M + mm_to_m(CARGO_HEIGHT_MM)
+    z_overlaps = _boxes_overlap_1d(
+        cargo_z_lo, cargo_z_hi, halo_box["z_min_m"], halo_box["z_max_m"]
+    )
+
     # Candidates, centre-corridor first (preferred default), then spreading outward.
     centre = (corridor_min + corridor_max) / 2.0
     if N_CANDIDATE_POSITIONS > 1:
@@ -138,15 +173,19 @@ def find_cargo_placement(
         candidates.append(min(centre + off, corridor_max))
         candidates.append(max(centre - off, corridor_min))
 
-    z_base_m = z_floor_m + z_margin_m
+    # z is FIXED under the halo (CARGO_Z_BASE_M), not derived from the floor.
+    # z_floor_m / z_margin_m are kept in the signature so existing callers keep
+    # working, but they no longer set the cargo height -- see CARGO_TOP_Z_MM.
+    del z_floor_m, z_margin_m
+    z_base_m = CARGO_Z_BASE_M
 
     # Legal (x_start, i) candidates in preference order (centre-first).
     legal = [
         (x_start, i)
         for i, x_start in enumerate(candidates)
-        if not _boxes_overlap_1d(
+        if not (z_overlaps and _boxes_overlap_1d(
             x_start, x_start + length_m, halo_box["x_min_m"], halo_box["x_max_m"]
-        )
+        ))
     ]
     if not legal:
         raise ValueError(
