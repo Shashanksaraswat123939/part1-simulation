@@ -216,6 +216,29 @@ def build_canister(canister_com_mm: tuple[float, float, float]) -> "trimesh.Trim
     return _to_metres(_translate_mm(mesh, *d_mm))
 
 
+def canister_front_x_mm(canister_com_mm: tuple[float, float, float]) -> float:
+    """x of the canister assembly's FRONT face, in car coordinates (mm).
+
+    This is the rearward travel limit for the halo: the pocket's rear edge may
+    come up to this plane and no further (project owner, 2026-07-24 -- "back of
+    the halo touching the co2 canister").
+
+    Measured off the positioned CAD rather than derived from the bore depth,
+    because `co2_canister.stl` already includes the minimum SAFETY ZONE around
+    the cartridge (project owner) -- which is the surface the halo actually
+    lofts to, and which sits forward of the bore front face. Reading the mesh
+    means the limit tracks the CAD automatically if the safety zone is ever
+    remodelled or split out.
+
+    At the design default (canister COM x=208.2 mm) this is 174.20 mm, giving
+    d_halo_max = 174.20 - 50 - ref_A = 94.20 mm at x_front=46 -- tighter than
+    the rear-axle bound of W-34 = 96.0 mm, so the canister is the binding
+    constraint there.
+    """
+    mesh = build_canister(canister_com_mm)
+    return float(mesh.bounds[0, 0] * 1000.0)
+
+
 def build_all_hardware(
     W_mm: float,
     x_front_mm: float,
