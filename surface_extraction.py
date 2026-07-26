@@ -158,11 +158,61 @@ def _estimate_local_radii(mesh: "trimesh.Trimesh") -> np.ndarray:
     try:
         import trimesh.curvature as tcurv
         ball_radius = MIN_RADIUS_M * 2.0
-        H_area = tcurv.discrete_mean_curvature_measure(
-            mesh, mesh.vertices, ball_radius
-        )
+
+        # Measured on the OCI VM, 2026-07-26, and both problems are real:
+        #
+        #   MEMORY. discrete_mean_curvature_measure runs an rtree ball query per
+        #   point and materialises every hit. Asking for all vertices at once
+        #   threw std::bad_alloc at 15 GB RSS on a 0.5 mm full-car surface; at
+        #   the 0.3 mm production spacing it took a 24 GB box down hard enough
+        #   to kill sshd and need a hard reset.
+        #
+        #   TIME. Even chunked, it ran >20 min per call. This gate runs EVERY
+        #   inner-loop iteration, so that alone would cost ~67 h over a
+        #   200-iteration run -- more than the CFD it is gating.
+        #
+        # Local test meshes are 2-3 mm and hit neither, which is why nothing
+        # caught this before a real VM.
+        #
+        # Fix: measure on a DECIMATED working copy, then map each original
+        # vertex to its nearest working-copy vertex. This is sound because the
+        # gate asks one question -- "is anything sharper than the 3.175 mm tool
+        # radius?" -- and a feature that sharp spans many facets at any
+        # resolution we produce. Sampling the field at ~1.5 mm cannot miss a
+        # 3.175 mm-radius feature, while measuring at 0.3 mm facet density is
+        # pure waste. Below WORK_FACES nothing changes: the original mesh is
+        # used directly.
+        WORK_FACES = 30_000
+        work = mesh
+        if len(mesh.faces) > WORK_FACES:
+            try:
+                cand = mesh.simplify_quadric_decimation(face_count=WORK_FACES)
+                if cand is not None and len(cand.faces) and len(cand.vertices):
+                    work = cand
+            except Exception:
+                work = mesh   # decimator unavailable: fall back to exact
+
+        CHUNK = 20_000
+        wv = work.vertices
+        if len(wv) <= CHUNK:
+            H_area = tcurv.discrete_mean_curvature_measure(work, wv, ball_radius)
+        else:
+            H_area = np.empty(len(wv), dtype=np.float64)
+            for lo in range(0, len(wv), CHUNK):
+                hi = min(lo + CHUNK, len(wv))
+                H_area[lo:hi] = tcurv.discrete_mean_curvature_measure(
+                    work, wv[lo:hi], ball_radius)
+
         curvature_abs = np.abs(H_area)
-        return np.where(curvature_abs > 1e-9, 1.0 / curvature_abs, 1e6)
+        radii_work = np.where(curvature_abs > 1e-9, 1.0 / curvature_abs, 1e6)
+        if work is mesh:
+            return radii_work
+        # Nearest working-copy vertex carries its radius to each original
+        # vertex, so the returned array still indexes mesh.vertices exactly --
+        # the caller uses those indices to smooth phi.
+        from scipy.spatial import cKDTree
+        _d, idx = cKDTree(wv).query(mesh.vertices, k=1)
+        return radii_work[idx]
     except Exception as _exc:
         # Curvature measurement failure is a gate failure, not a pass.
         # Returning 1e6 (infinite radius) would silently pass sub-threshold
