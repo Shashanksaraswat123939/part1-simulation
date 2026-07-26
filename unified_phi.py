@@ -121,6 +121,11 @@ class UnifiedGeometry:
     x_front_mm: float
     d_halo_mm: float
     fixed_hardware: object = None   # FixedHardwareResult, or None if Part 2 absent
+    # Grid spacing this geometry was BUILT at, in metres. Recorded because
+    # GRID_SPACING_M is a module global that sandbox/coarse.use_spacing rewrites
+    # at runtime -- so by the time a geometry is remapped onto a finer grid, the
+    # global no longer describes the geometry in hand. remap_geometry needs both.
+    spacing_m: float = 0.0
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -557,7 +562,86 @@ def build_unified_geometry(
         x_front_mm=x_front_mm,
         d_halo_mm=d_halo_mm,
         fixed_hardware=fixed_hardware,
+        spacing_m=GRID_SPACING_M,
     )
+
+
+def remap_geometry(
+    prev_geom: "UnifiedGeometry",
+    W_mm: float = None,
+    x_front_mm: float = None,
+    d_halo_mm: float = None,
+    cargo_placement: dict = None,
+    with_cargo: bool = True,
+) -> "UnifiedGeometry":
+    """Carry an evolved shape onto a grid at the CURRENT GRID_SPACING_M.
+
+    This is what makes coarse-to-fine optimisation possible, and it is the
+    thing warm_start_phi_grids explicitly does NOT do: that rebuilds a fresh
+    field and throws the evolved shape away.
+
+    Why it matters. Surface travel per Hamilton-Jacobi iteration is
+    `CFL x grid_spacing`, while phi cost scales with spacing^-3. So spacing is a
+    LINEAR lever on how far the shape can move and a CUBIC one on what that
+    costs:
+
+        0.5 mm, CFL 0.3   0.15 mm/iter   ~200 iters to move 30 mm   8.50M cells
+        2.0 mm, CFL 0.9   1.80 mm/iter   ~17  iters to move 30 mm   0.13M cells
+
+    Carving the gross shape on a coarse grid and then polishing on a fine one is
+    therefore ~12x fewer iterations AND ~60x cheaper per iteration than doing it
+    all at 0.5 mm. Without a remap you cannot do that at all, because dropping to
+    a finer grid means starting from a brick again.
+
+    Resampling is trilinear on the signed distance field, then the hard masks
+    are re-applied and the field is re-distanced. Reinitialisation matters: an
+    interpolated SDF no longer satisfies |grad phi| = 1, and every HJ step
+    assumes it does.
+
+    Args:
+        prev_geom: the evolved geometry to carry over. Its own spacing is read
+            from prev_geom.spacing_m, not from the module global -- the global
+            has usually already been changed to the target by the caller.
+        W_mm / x_front_mm / d_halo_mm: default to prev_geom's own scalars, so
+            the common case (same car, finer grid) needs no arguments.
+
+    Returns a new UnifiedGeometry at the current spacing whose zero level set
+    matches prev_geom's, with all hard constraints freshly applied.
+    """
+    from scipy.ndimage import map_coordinates
+    from phi_updater import reinitialise_sdf
+
+    src_dx = prev_geom.spacing_m or GRID_SPACING_M
+    W_mm = prev_geom.W_mm if W_mm is None else W_mm
+    x_front_mm = prev_geom.x_front_mm if x_front_mm is None else x_front_mm
+    d_halo_mm = prev_geom.d_halo_mm if d_halo_mm is None else d_halo_mm
+
+    new = build_unified_geometry(
+        W_mm, x_front_mm, d_halo_mm, init_mode="full",
+        cargo_placement=cargo_placement, with_cargo=with_cargo,
+    )
+    dst_dx = new.spacing_m or GRID_SPACING_M
+
+    # World coordinates of every destination cell centre, expressed in SOURCE
+    # index space, so map_coordinates can sample the source field there.
+    src_o = np.asarray(prev_geom.region.origin_m, dtype=np.float64)
+    dst_o = np.asarray(new.region.origin_m, dtype=np.float64)
+    idx = np.indices(new.region.shape, dtype=np.float32)
+    coords = np.empty_like(idx)
+    for ax in range(3):
+        coords[ax] = ((dst_o[ax] + idx[ax] * dst_dx) - src_o[ax]) / src_dx
+
+    resampled = map_coordinates(
+        prev_geom.phi.grid.astype(np.float32), coords,
+        order=1, mode="nearest",       # outside the old box -> nearest edge value
+    ).astype(np.float32)
+
+    new.phi.grid = resampled
+    new.phi.apply_hard_constraints()
+    reinitialise_sdf(new.phi)          # restore |grad phi| = 1 after interpolation
+    new.phi.apply_hard_constraints()   # reinit can nudge cells across the masks
+    enforce_symmetry(new)
+    return new
 
 
 def _init_field(phi: PhiGrid, mode: str, seed: int) -> None:
