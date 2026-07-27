@@ -662,25 +662,38 @@ def apply_adjoint_to_unified(
     #     F > 0 lowers phi, grows the solid, and moves the surface OUTWARD.
     # Hence F = -sens.
     #
-    # ⚠ UNVERIFIED, and it is the ledger's job to keep saying so. What is NOT
-    # settled by the argument above is which way OpenFOAM's pointSensNormal
-    # points -- out of the solid or into the fluid. That is a documentation/
-    # convention question no amount of reasoning here can close.
+    # DIRECTION VERIFIED 2026-07-27, by the only test that can settle it: an
+    # AERO-ONLY run (w_mass=0, so the shape update is this gradient and nothing
+    # else), two iterations against real OpenFOAM.
     #
-    # It is also not yet EMPIRICALLY testable. An earlier version of this
-    # comment claimed a 2026-07-27 A/B run proved the sign was inverted
-    # (D20_half 0.342365 -> 0.374725 N over two iterations). That inference was
-    # wrong: the aero gradient was inert at the time (see the outlier guard
-    # below), so the drag rise it cited came from the mass gradient shrinking
-    # the body, not from the adjoint direction. The confirming A/B showed the
-    # flip changed the resulting geometry by 0.369 mm^3 out of a 932 mm^3
-    # step -- 0.04%. A sign that moves nothing cannot be validated by what
-    # moves.
+    #     D20   0.737271 -> 0.697207 N   (-5.43%)
+    #     mass  158.598  -> 158.598 g    (unchanged, confirming w_mass=0)
+    #     T_raw 3.217887 -> 3.198395 s
     #
-    # Once includeMeshMovement=false makes the aero term live again, the test
-    # is the one that was attempted here: hold the mass weight at zero, run two
-    # iterations, and check drag FALLS. Until that has been run, treat this
-    # negation as derived-but-unconfirmed.
+    # Drag fell with mass held exactly constant, so the drop is attributable to
+    # this gradient alone and the descent direction is right. That also settles
+    # which way OpenFOAM's pointSensNormal points, which no amount of reasoning
+    # about conventions could. Reproduce with
+    # `run_two_stage.py --smoke --aero-only`.
+    #
+    # ⚠ The DIRECTION is verified; the MAGNITUDE is not. Drag on this coarse
+    # mesh is not reproducible to better than several percent: the same nominal
+    # starting geometry gave D20 = 0.6847 N before the symmetry-plane snap fix
+    # and 0.7373 N after -- a 7.7% swing from a sub-micron geometry change,
+    # i.e. remeshing noise. The -5.43% above is therefore smaller than the
+    # run-to-run spread and must NOT be read as a measured improvement. It
+    # establishes sign, not size. A mesh-convergence study is what would make
+    # drag deltas of this size meaningful.
+    #
+    # An earlier version of this comment claimed a 2026-07-27 A/B run proved
+    # the sign was inverted (D20_half 0.342365 -> 0.374725 N over two
+    # iterations). That inference was wrong twice over: the aero gradient was
+    # inert at the time (the adjoint was diverging -- see the outlier guard
+    # below), so the drag rise came from the mass gradient shrinking the body;
+    # and w_mass was live, so nothing in that run was attributable to the
+    # adjoint at all. Negating the whole gradient moved the geometry by 0.369
+    # mm^3 of a 932 mm^3 step -- 0.04%. A sign that moves nothing cannot be
+    # validated by what moves.
     sens = -sens
 
     # OUTLIER GUARD. combine_gradients normalises each gradient to unit RMS, so
