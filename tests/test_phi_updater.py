@@ -188,6 +188,124 @@ def test_apply_adjoint_sensitivity_updates_symmetric_component():
     _pass("test_apply_adjoint_sensitivity_updates_symmetric_component")
 
 
+def _make_unified_fake(nx=24, ny=25, nz=24):
+    """Minimal stand-in for UnifiedGeometry: apply_adjoint_to_unified only ever
+    touches .phi, .shape and .labels."""
+    from types import SimpleNamespace
+    from unified_phi import LABEL_MAIN_BODY
+    bv = BoundingRegion("main_body",
+                        (0.0, -(ny // 2) * GRID_SPACING_M, 0.0), (nx, ny, nz))
+    solid = np.zeros((nx, ny, nz), dtype=bool)
+    air = np.zeros((nx, ny, nz), dtype=bool)
+    air[0, :, :] = True; air[-1, :, :] = True
+    air[:, 0, :] = True; air[:, -1, :] = True
+    air[:, :, 0] = True; air[:, :, -1] = True
+    phi = PhiGrid("main_body", bv, np.zeros((nx, ny, nz), dtype=np.float32),
+                  solid, air)
+    phi.init("sphere")
+    labels = np.full((nx, ny, nz), LABEL_MAIN_BODY, dtype=np.int16)
+    return SimpleNamespace(phi=phi, shape=(nx, ny, nz), labels=labels)
+
+
+def _surface_vertices(geom, n=300):
+    """Vertices scattered through the interior of the grid, y > 0."""
+    ox, oy, oz = geom.phi.bv.origin_m
+    nx, ny, nz = geom.shape
+    rng = np.random.default_rng(0)
+    i = rng.integers(2, nx - 2, n)
+    j = rng.integers(ny // 2, ny - 2, n)
+    k = rng.integers(2, nz - 2, n)
+    return np.stack([ox + i * GRID_SPACING_M,
+                     oy + j * GRID_SPACING_M,
+                     oz + k * GRID_SPACING_M], axis=1)
+
+
+_MASS_REPORT = {"total_mass_kg": 0.050, "com_x_m": 0.10, "com_z_m": 0.025}
+_GRADS = {"dT_dmass": 4.0, "dT_dh_com": 0.5, "dT_dx_com": 0.1}
+
+
+def _run_update(sens, verts, w_mass=0.0):
+    from types import SimpleNamespace
+    from phi_updater import apply_adjoint_to_unified
+    geom = _make_unified_fake()
+    apply_adjoint_to_unified(
+        geom, sens, SimpleNamespace(vertices=verts), dt=1e-6,
+        gradient_weights={"w_aero": 1.0, "w_mass": w_mass,
+                          "w_com": 0.0, "w_mfg": 0.0},
+        objective_gradients=_GRADS, mass_report=_MASS_REPORT,
+    )
+    return geom.phi.grid.copy()
+
+
+def test_aero_gradient_actually_steers_the_shape():
+    """THE regression test for the 2026-07-27 silent failure.
+
+    With the mass term off, the shape update is the aero gradient and nothing
+    else, so negating the sensitivity MUST produce a materially different field.
+    It did not for a full smoke run: the adjoint mesh-movement chain returned a
+    field whose top 10 points carried 99.33% of the sum of squares, unit-RMS
+    normalisation crushed everything else, and flipping the sign moved the
+    geometry by 0.04%. Every existing test passed throughout, because they all
+    feed a synthetic well-conditioned sensitivity.
+    """
+    geom0 = _make_unified_fake()
+    verts = _surface_vertices(geom0)
+    rng = np.random.default_rng(1)
+    sens = rng.normal(size=len(verts))
+
+    pos = _run_update(sens, verts)
+    neg = _run_update(-sens, verts)
+    delta = float(np.max(np.abs(pos - neg)))
+    baseline = float(np.max(np.abs(pos - _make_unified_fake().phi.grid)))
+    assert baseline > 0, "aero update did not move the field at all"
+    assert delta > 0.25 * baseline, (
+        f"negating the sensitivity changed the field by {delta:.3e} against a "
+        f"total step of {baseline:.3e} ({100.0 * delta / baseline:.2f}%); the "
+        f"aero gradient is not steering the shape"
+    )
+    _pass("test_aero_gradient_actually_steers_the_shape")
+
+
+def test_spiky_sensitivity_warns_and_still_steers():
+    """A field like the real diverged one must be flagged AND survive the clip.
+
+    Ten values at 1e55 against a unit-scale background reproduces the measured
+    99.33% concentration. Without the pre-normalisation clip this update is
+    indistinguishable from its own negation.
+    """
+    import warnings
+    geom0 = _make_unified_fake()
+    verts = _surface_vertices(geom0)
+    rng = np.random.default_rng(2)
+    sens = rng.normal(size=len(verts))
+    sens[:10] = 1e55
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pos = _run_update(sens, verts)
+        assert any(issubclass(w.category, RuntimeWarning)
+                   and "pathologically spiky" in str(w.message) for w in caught), \
+            "spiky sensitivity did not raise the concentration warning"
+    neg = _run_update(-sens, verts)
+    delta = float(np.max(np.abs(pos - neg)))
+    assert delta > 0, "clipped spiky sensitivity still does not steer the shape"
+    _pass("test_spiky_sensitivity_warns_and_still_steers")
+
+
+def test_non_finite_sensitivity_raises():
+    geom0 = _make_unified_fake()
+    verts = _surface_vertices(geom0)
+    sens = np.ones(len(verts))
+    sens[3] = np.nan
+    try:
+        _run_update(sens, verts)
+    except ValueError as exc:
+        assert "non-finite" in str(exc), f"unexpected message: {exc}"
+        _pass("test_non_finite_sensitivity_raises")
+        return
+    _fail("test_non_finite_sensitivity_raises", "no ValueError for NaN sensitivity")
+
+
 if __name__ == "__main__":
     test_godunov_gradient_returns_array()
     test_grad_magnitude_positive()
@@ -202,4 +320,7 @@ if __name__ == "__main__":
     test_apply_adjoint_sensitivity_mismatched_lengths_raises()
     test_apply_adjoint_sensitivity_raises_on_none()
     test_apply_adjoint_sensitivity_updates_symmetric_component()
+    test_aero_gradient_actually_steers_the_shape()
+    test_spiky_sensitivity_warns_and_still_steers()
+    test_non_finite_sensitivity_raises()
     print("\nAll phi_updater tests passed.")

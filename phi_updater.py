@@ -11,6 +11,14 @@ from __future__ import annotations
 import numpy as np
 
 from geometry_contract import GRID_SPACING_M, get_density
+
+# Share of the sensitivity's sum-of-squares the 10 largest points may carry
+# before the field counts as too spiky for unit-RMS normalisation to survive.
+# A healthy drag sensitivity is smooth over the patch, so 10 points out of
+# ~10k should carry a few percent; the diverged mesh-movement field measured on
+# 2026-07-27 carried 99.33%. 0.5 sits far above the former and far below the
+# latter.
+_SENS_CONCENTRATION_LIMIT = 0.5
 from phi_grid import PhiGrid
 
 
@@ -647,26 +655,81 @@ def apply_adjoint_to_unified(
             RuntimeWarning, stacklevel=2,
         )
 
-    # DESCENT SIGN. `sens` is dT/dSurface: positive where pushing the surface
-    # OUTWARD increases race time. We are MINIMISING T, so the surface must
-    # move along -dT/dSurface. hj_update uses `phi <- phi - dt*F*|grad phi|`
-    # with F > 0 meaning "grow the solid", so the velocity fed to it must be
-    # NEGATED relative to the gradient.
+    # DESCENT SIGN. Derived from the two conventions, NOT measured:
+    #   * `sens` is dT/dSurface, positive where pushing the surface OUTWARD
+    #     increases race time; minimising T means moving along -dT/dSurface;
+    #   * hj_update is `phi <- phi - dt*F*|grad phi|` with phi < 0 solid, so
+    #     F > 0 lowers phi, grows the solid, and moves the surface OUTWARD.
+    # Hence F = -sens.
     #
-    # Measured before this was added (2026-07-27), two real OpenFOAM iterations
-    # on the smoke case:
-    #     D20_half   0.342365 -> 0.374725 N   (+9.45%)
-    #     frontal    3747.5   -> 3721.2 mm2   (-0.70%)
-    #     T_raw      3.191709 -> 3.224107 s   (+32.4 ms)
-    # The body got SMALLER and DRAGGIER -- Cd up 10.2% -- i.e. the optimiser was
-    # walking uphill. Both solves converged comparably (final p residual 1.3e-5
-    # each), so this was not convergence noise, and 9.45% is far past what
-    # remeshing can explain from a 0.7% shape change.
+    # ⚠ UNVERIFIED, and it is the ledger's job to keep saying so. What is NOT
+    # settled by the argument above is which way OpenFOAM's pointSensNormal
+    # points -- out of the solid or into the fluid. That is a documentation/
+    # convention question no amount of reasoning here can close.
     #
-    # No unit test could have caught this: every test drives update_phi with a
-    # synthetic sensitivity, where the sign is whatever the fixture says. It
-    # took two real solves and a drag comparison.
+    # It is also not yet EMPIRICALLY testable. An earlier version of this
+    # comment claimed a 2026-07-27 A/B run proved the sign was inverted
+    # (D20_half 0.342365 -> 0.374725 N over two iterations). That inference was
+    # wrong: the aero gradient was inert at the time (see the outlier guard
+    # below), so the drag rise it cited came from the mass gradient shrinking
+    # the body, not from the adjoint direction. The confirming A/B showed the
+    # flip changed the resulting geometry by 0.369 mm^3 out of a 932 mm^3
+    # step -- 0.04%. A sign that moves nothing cannot be validated by what
+    # moves.
+    #
+    # Once includeMeshMovement=false makes the aero term live again, the test
+    # is the one that was attempted here: hold the mass weight at zero, run two
+    # iterations, and check drag FALLS. Until that has been run, treat this
+    # negation as derived-but-unconfirmed.
     sens = -sens
+
+    # OUTLIER GUARD. combine_gradients normalises each gradient to unit RMS, so
+    # a heavy-tailed sensitivity does not merely add noise -- it deletes the
+    # signal. Measured on the 2026-07-27 smoke run, with the adjoint mesh
+    # movement chain still enabled: the raw field spanned -1.13e+57..4.74e+55
+    # and its TOP TEN POINTS carried 99.33% of the sum of squares. Those ten
+    # absorbed the entire norm, the real per-point signal was rescaled to ~0.7%
+    # of it, and the p99.9 clip further down then trimmed the spikes as well.
+    # Net effect: the aero term contributed 0.04% of the shape update and the
+    # optimiser silently ran on the mass gradient alone for every iteration.
+    #
+    # The root cause is fixed upstream (openfoam_adjoint.py sets
+    # includeMeshMovement false). This is the detector that should have caught
+    # it, kept because "the aero term quietly stopped steering" is exactly the
+    # failure mode that survives a green test suite -- every unit test drives
+    # this function with a synthetic, well-conditioned sensitivity.
+    finite = np.isfinite(sens)
+    if not finite.all():
+        raise ValueError(
+            f"adjoint sensitivity has {int((~finite).sum())} non-finite values; "
+            "the adjoint solve did not produce a usable gradient."
+        )
+    sq = sens ** 2
+    total_sq = float(sq.sum())
+    if total_sq > 0:
+        top = np.sort(sq)[::-1][:10]
+        concentration = float(top.sum()) / total_sq
+        if concentration > _SENS_CONCENTRATION_LIMIT:
+            import warnings
+            warnings.warn(
+                f"adjoint sensitivity is pathologically spiky: the top 10 of "
+                f"{len(sens):,} values carry {100.0 * concentration:.2f}% of the "
+                f"sum of squares (limit {100.0 * _SENS_CONCENTRATION_LIMIT:.0f}%). "
+                f"range [{sens.min():.3e}, {sens.max():.3e}]. Unit-RMS "
+                f"normalisation will crush the real signal and the aero term "
+                f"will not steer the shape. Clipping to the p99.9 magnitude so "
+                f"the run stays interpretable, but the adjoint setup is wrong — "
+                f"check includeMeshMovement and the adjoint residuals.",
+                RuntimeWarning, stacklevel=2,
+            )
+        # Clip BEFORE the RMS normalisation, which is the only place it helps.
+        # The existing clip in this function acts on the already-normalised sum,
+        # by which point the outliers have already set the scale.
+        nz = np.abs(sens)[np.abs(sens) > 0]
+        if nz.size:
+            cap = float(np.percentile(nz, 99.9))
+            if cap > 0:
+                sens = np.clip(sens, -cap, cap)
 
     # Aero velocity: splat right-half sensitivity + its y-mirror onto the field.
     vel_r = _splat_vertex_sensitivity_to_grid(sens, verts, phi)
