@@ -647,6 +647,27 @@ def apply_adjoint_to_unified(
             RuntimeWarning, stacklevel=2,
         )
 
+    # DESCENT SIGN. `sens` is dT/dSurface: positive where pushing the surface
+    # OUTWARD increases race time. We are MINIMISING T, so the surface must
+    # move along -dT/dSurface. hj_update uses `phi <- phi - dt*F*|grad phi|`
+    # with F > 0 meaning "grow the solid", so the velocity fed to it must be
+    # NEGATED relative to the gradient.
+    #
+    # Measured before this was added (2026-07-27), two real OpenFOAM iterations
+    # on the smoke case:
+    #     D20_half   0.342365 -> 0.374725 N   (+9.45%)
+    #     frontal    3747.5   -> 3721.2 mm2   (-0.70%)
+    #     T_raw      3.191709 -> 3.224107 s   (+32.4 ms)
+    # The body got SMALLER and DRAGGIER -- Cd up 10.2% -- i.e. the optimiser was
+    # walking uphill. Both solves converged comparably (final p residual 1.3e-5
+    # each), so this was not convergence noise, and 9.45% is far past what
+    # remeshing can explain from a 0.7% shape change.
+    #
+    # No unit test could have caught this: every test drives update_phi with a
+    # synthetic sensitivity, where the sign is whatever the fixture says. It
+    # took two real solves and a drag comparison.
+    sens = -sens
+
     # Aero velocity: splat right-half sensitivity + its y-mirror onto the field.
     vel_r = _splat_vertex_sensitivity_to_grid(sens, verts, phi)
     verts_l = verts.copy()
