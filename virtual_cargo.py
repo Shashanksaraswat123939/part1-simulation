@@ -85,6 +85,7 @@ def find_cargo_placement(
     z_floor_m: float,
     z_margin_m: float = 0.001,
     score_fn: Optional[Callable[[float, bool], float]] = None,
+    is_valid: Optional[Callable[[float, bool], bool]] = None,
 ) -> dict:
     """
     Pick a legal cargo placement for this (x_front, W, d_halo) combination.
@@ -195,20 +196,42 @@ def find_cargo_placement(
             f"W={W_mm}mm, d_halo={d_halo_mm}mm."
         )
 
+    # is_valid, when supplied, is the ONLY thing here that can see the actual
+    # forced-air masks (wheel keep-clears, T7.9 zones, cartridge bore, ballast
+    # slot). The halo screen above is geometric and blind to all of them, so
+    # without this a scored search happily returns a placement that
+    # build_unified_geometry then refuses.
+    #
+    # Measured 2026-07-27 at W=130/x_front=46: the geometric default lands at
+    # x_start = 0.081 m and builds; the COM-scored optimum is 35 mm further
+    # forward at 0.046 m, straight into the front wheel keep-clear, and erodes
+    # 23.7% of the cargo. Every Stage-1 candidate failed this way, so
+    # run_stage1 returned best=None and the two-stage run died on the handoff.
+    candidates_in_order = [(x, i, f) for (x, i) in legal for f in (False, True)]
+    if is_valid is not None:
+        buildable = [c for c in candidates_in_order if is_valid(c[0], c[2])]
+        if not buildable:
+            raise ValueError(
+                f"No virtual cargo placement in the axle corridor "
+                f"[{corridor_min:.4f}, {corridor_max:.4f}] m both avoids the halo "
+                f"pocket AND survives the forced-air regions (wheel keep-clears, "
+                f"T7.9 zones, cartridge bore). Tried {len(candidates_in_order)} "
+                f"position/flip combinations at W={W_mm}mm, x_front={x_front_mm}mm, "
+                f"d_halo={d_halo_mm}mm."
+            )
+        candidates_in_order = buildable
+
     if score_fn is None:
-        # Default: corridor-centre, wide-forward. Unchanged from before.
-        x_start, i = legal[0]
+        # Default: first surviving candidate — corridor-centre, wide-forward
+        # when nothing rules it out. Unchanged from before when is_valid is None.
+        x_start, i, flip = candidates_in_order[0]
         return {
             "x_start_m": x_start, "z_base_m": z_base_m,
-            "flip": False, "collided_with_default": i > 0,
+            "flip": flip, "collided_with_default": i > 0,
         }
 
-    # Scored: try every legal position in BOTH orientations, pick the minimum.
-    best = min(
-        ((x_start, i, flip) for (x_start, i) in legal for flip in (False, True)),
-        key=lambda c: score_fn(c[0], c[2]),
-    )
-    x_start, i, flip = best
+    # Scored: try every surviving position in BOTH orientations, pick the minimum.
+    x_start, i, flip = min(candidates_in_order, key=lambda c: score_fn(c[0], c[2]))
     return {
         "x_start_m": x_start, "z_base_m": z_base_m,
         "flip": flip, "collided_with_default": i > 0,

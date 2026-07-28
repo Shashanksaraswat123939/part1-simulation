@@ -336,6 +336,66 @@ def _zone_masks(
     return zones
 
 
+def measure_cargo_erosion(cargo_solid, hard_air, region, ref_plane_A_m,
+                          d_halo_mm) -> tuple[int, int]:
+    """(eaten, requested) interior cargo cells lost to forced-air regions.
+
+    Extracted so the FEASIBILITY SCREEN and the BUILD-TIME GUARD measure the
+    same thing. They previously could not: find_cargo_placement screened only
+    the halo pocket, while this measurement -- the actual authority -- also sees
+    wheel keep-clears, T7.9 zones, the cartridge bore and the ballast slot. The
+    screen therefore returned placements the builder then refused, and with a
+    cargo scorer driving placement forward into the front wheel keep-clear that
+    was EVERY candidate: Stage 1 returned best=None and the whole two-stage run
+    died at `'NoneType' object has no attribute 'W_mm'`.
+
+    The grid border seal is excluded (it is not a collision), and ballast
+    overlap is exempt: T4.2 says the cargo "may coincide with the legal ballast
+    container but not the halo pocket". With the cargo pinned to 14..24 mm and
+    the ballast slot at 17.65..24 mm they overlap 6.35 mm BY DESIGN, so counting
+    that as erosion would reject every car.
+    """
+    interior = np.ones(region.shape, dtype=bool)
+    interior[0, :, :] = interior[-1, :, :] = False
+    interior[:, 0, :] = interior[:, -1, :] = False
+    interior[:, :, 0] = interior[:, :, -1] = False
+    allowed = build_ballast_container_forbidden_mask(
+        region.origin_m, region.shape, ref_plane_A_m, d_halo_mm,
+    )
+    _mirror_right_onto_left(allowed)
+    requested = int((cargo_solid & interior).sum())
+    eaten = int((cargo_solid & hard_air & interior & ~allowed).sum())
+    return eaten, requested
+
+
+def cargo_placement_is_buildable(geom_without_cargo, ref_plane_A_m, d_halo_mm,
+                                 x_start_m, z_base_m, flip) -> bool:
+    """Would this cargo placement survive build_unified_geometry's guard?
+
+    Uses the forced-air mask of an already-built cargo-free geometry, so a
+    caller that has one (stage1_search builds exactly that for its scorer) can
+    screen candidate placements for a few mask operations instead of a full
+    rebuild each.
+    """
+    # Local import: virtual_cargo <-> unified_phi would be circular at module
+    # level, which is why build_unified_geometry imports it here too.
+    from virtual_cargo import build_virtual_cargo_solid_mask
+
+    region = geom_without_cargo.region
+    z_base = max(z_base_m, region.origin_m[2])
+    cargo = build_virtual_cargo_solid_mask(
+        region.origin_m, region.shape, x_start_m, z_base, flip=flip,
+    )
+    _mirror_right_onto_left(cargo)
+    eaten, requested = measure_cargo_erosion(
+        cargo, geom_without_cargo.phi.hard_mask_air, region,
+        ref_plane_A_m, d_halo_mm,
+    )
+    if not requested:
+        return False
+    return eaten / requested <= CARGO_MAX_ERODED_FRACTION
+
+
 def build_unified_geometry(
     W_mm: float,
     x_front_mm: float,
@@ -512,23 +572,9 @@ def build_unified_geometry(
     # loss BEFORE resolving, and refuse to build a car that doesn't contain the
     # cargo the regs require.
     if with_cargo:
-        interior = np.ones(region.shape, dtype=bool)
-        interior[0, :, :] = interior[-1, :, :] = False
-        interior[:, 0, :] = interior[:, -1, :] = False
-        interior[:, :, 0] = interior[:, :, -1] = False
-        # T4.2 verbatim: the cargo "may coincide with the legal ballast
-        # container but not the halo pocket". So ballast overlap is LEGAL and
-        # must not count as erosion -- the ballast slot simply wins the cell
-        # (it is mandatory empty). This matters now that the cargo sits at
-        # 14..24 mm directly under the halo: the ballast slot occupies
-        # 17.65..24 mm, so the two overlap by 6.35 mm BY DESIGN. Without this
-        # exemption the guard would reject every car.
-        allowed = build_ballast_container_forbidden_mask(
-            region.origin_m, region.shape, bv.ref_plane_A_m, d_halo_mm,
+        eaten, requested = measure_cargo_erosion(
+            hard_solid, hard_air, region, bv.ref_plane_A_m, d_halo_mm,
         )
-        _mirror_right_onto_left(allowed)
-        requested = int((hard_solid & interior).sum())
-        eaten = int((hard_solid & hard_air & interior & ~allowed).sum())
         if requested and eaten / requested > CARGO_MAX_ERODED_FRACTION:
             raise ValueError(
                 f"virtual cargo (T4.2) is {100 * eaten / requested:.1f}% eroded by "

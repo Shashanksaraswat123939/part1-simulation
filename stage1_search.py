@@ -39,7 +39,7 @@ from geometry_contract import (
 )
 from bounding_volumes import default_rule_envelope
 from bayesian_outer_search import _unified_mass_com_state
-from virtual_cargo import cargo_mass_com, find_cargo_placement
+from virtual_cargo import cargo_mass_com, find_cargo_placement, CARGO_Z_BASE_M
 from geometry_contract import mm_to_m, D_HALO_REF_A_OFFSET_MM
 
 NOMINAL_D_HALO_MM: float = 20.0          # held fixed in Stage 1; Stage 2 sweeps it
@@ -183,6 +183,7 @@ def evaluate_scalars(
 
     # ── Step 1: cargo placement ──────────────────────────────────────────────
     score_fn = None
+    is_valid = None
     if cargo_scorer is not None:
         try:
             base_geom = build_unified_geometry(
@@ -203,9 +204,26 @@ def evaluate_scalars(
             com_z = (m0 * cz0 + cm * ccz) / total
             return cargo_scorer(total, com_x, com_z)
 
+        # base_geom is cargo-free, so its forced-air mask is exactly what the
+        # build-time cargo guard will test against. Screening here costs a few
+        # mask operations per candidate instead of a full rebuild, and without
+        # it the scorer picks the COM-optimal placement with no idea whether it
+        # is buildable -- which it usually is not, because moving cargo forward
+        # improves com_x and also walks it into the front wheel keep-clear.
+        from unified_phi import cargo_placement_is_buildable
+
+        def is_valid(x_start_m, flip):
+            return cargo_placement_is_buildable(
+                # bv.ref_plane_A_m, not the locally-derived ref_A_m — same
+                # value today, but the screen must read the guard's own source.
+                base_geom, base_geom.bv.ref_plane_A_m, d_halo_mm,
+                x_start_m, CARGO_Z_BASE_M, flip,
+            )
+
     try:
         placement = find_cargo_placement(
-            x_front_mm, W_mm, ref_A_m, d_halo_mm, re.z_floor_m, score_fn=score_fn,
+            x_front_mm, W_mm, ref_A_m, d_halo_mm, re.z_floor_m,
+            score_fn=score_fn, is_valid=is_valid,
         )
     except ValueError:
         return _fail(W_mm, x_front_mm, d_halo_mm)

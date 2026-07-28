@@ -157,6 +157,50 @@ def test_solid_mask_respects_height():
     _pass("test_solid_mask_respects_height")
 
 
+def test_is_valid_filters_placements_the_builder_would_reject():
+    """The halo screen is blind to wheel keep-clears and the other void regions.
+
+    Without an is_valid hook a scored search returns the COM-optimal placement
+    with no idea whether it can be built. Measured 2026-07-27 at
+    W=130/x_front=46: the scorer chose x_start = 0.046 m, 35 mm forward of the
+    geometric default and inside the front wheel keep-clear, eroding 23.7% of
+    the cargo. build_unified_geometry refused, evaluate_scalars returned _fail,
+    and EVERY Stage-1 candidate died -- run_stage1 gave best=None and the whole
+    two-stage run crashed on the handoff.
+    """
+    from virtual_cargo import find_cargo_placement
+
+    kw = dict(x_front_mm=46.0, W_mm=130.0, ref_plane_A_m=0.030,
+              d_halo_mm=20.0, z_floor_m=0.0015)
+
+    unscreened = find_cargo_placement(**kw)
+
+    # Learn the candidate positions actually offered, then reject all but one
+    # of them -- a target invented independently need not be on the grid.
+    offered = []
+    find_cargo_placement(**kw, is_valid=lambda x, f: (offered.append(x), True)[1])
+    assert offered, "is_valid was never consulted"
+    target = next((x for x in offered
+                   if abs(x - unscreened["x_start_m"]) > 1e-9), None)
+    assert target is not None, "only one candidate position; cannot test filtering"
+
+    got = find_cargo_placement(**kw,
+                               is_valid=lambda x, f: abs(x - target) < 1e-9)
+    assert abs(got["x_start_m"] - target) < 1e-9, (
+        f"is_valid was ignored: got {got['x_start_m']}, wanted {target}")
+    assert abs(got["x_start_m"] - unscreened["x_start_m"]) > 1e-9, (
+        "the screened result should differ from the unscreened default")
+
+    # And when nothing is buildable it must raise, not return an unbuildable one.
+    try:
+        find_cargo_placement(**kw, is_valid=lambda x, f: False)
+    except ValueError as exc:
+        assert "forced-air" in str(exc)
+    else:
+        raise AssertionError("no buildable placement should raise, not return one")
+    _pass("test_is_valid_filters_placements_the_builder_would_reject")
+
+
 def test_regs_dimensions_unchanged():
     assert CARGO_LENGTH_MM == 60.0
     assert CARGO_WIDE_WIDTH_MM == 55.0
@@ -174,5 +218,6 @@ if __name__ == "__main__":
     test_placement_still_raises_when_the_corridor_itself_is_too_short()
     test_solid_mask_wide_end_is_wider_than_narrow_end()
     test_solid_mask_respects_height()
+    test_is_valid_filters_placements_the_builder_would_reject()
     test_regs_dimensions_unchanged()
     print("\nAll virtual_cargo tests passed.")
