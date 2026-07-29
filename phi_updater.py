@@ -800,14 +800,25 @@ def apply_adjoint_to_unified(
     # normalisation guaranteed the two terms arrived at parity whatever their
     # real sizes, which is how a completely inert aero channel went unnoticed
     # for the entire project.
-    _a_rms = float(np.sqrt(np.mean((w_aero * aero_v) ** 2)))
-    _m_rms = float(np.sqrt(np.mean((w_mass * masscom_v) ** 2)))
-    _tot = _a_rms + _m_rms
-    if _tot > 0:
-        print(f"[phi_updater] gradient balance (physical, not normalised): "
-              f"aero {100.0 * _a_rms / _tot:5.1f}%  mass/COM "
-              f"{100.0 * _m_rms / _tot:5.1f}%   "
-              f"(rms {_a_rms:.3e} vs {_m_rms:.3e} s/m^3)")
+    # Measured AT THE INTERFACE, not over the whole grid.
+    #
+    # A whole-grid RMS flatters the mass term for the wrong reason: it has
+    # support in every body cell, while the aero term lives in a band around the
+    # surface, so the comparison would partly measure support rather than
+    # strength. Only the velocity where phi ~ 0 moves the level set, so that is
+    # the band worth comparing. Measured 2026-07-28, the two differ enough to
+    # matter: whole-grid gave aero 19.7% / mass 80.3%.
+    _band = np.abs(phi.grid) < (2.0 * GRID_SPACING_M)
+    if _band.any():
+        _a_rms = float(np.sqrt(np.mean((w_aero * aero_v)[_band] ** 2)))
+        _m_rms = float(np.sqrt(np.mean((w_mass * masscom_v)[_band] ** 2)))
+        _tot = _a_rms + _m_rms
+        if _tot > 0:
+            print(f"[phi_updater] gradient balance at the interface "
+                  f"(physical, not normalised): aero {100.0 * _a_rms / _tot:5.1f}%"
+                  f"  mass/COM {100.0 * _m_rms / _tot:5.1f}%   "
+                  f"(rms {_a_rms:.3e} vs {_m_rms:.3e} s/m^3, "
+                  f"{int(_band.sum()):,} band cells)")
     # Splatting the surface sensitivity and extending it leaves a few localised
     # SPIKES (max >> rms). The CFL limiter, correctly, throttles the timestep to
     # the fastest-moving cell -- so a handful of artifact spikes would freeze the
