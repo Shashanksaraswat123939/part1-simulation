@@ -8,6 +8,8 @@ Uses Godunov upwind scheme for |grad phi|. Includes SDF reinitialisation
 and velocity extension from surface to volume.
 """
 from __future__ import annotations
+import warnings
+
 import numpy as np
 
 from geometry_contract import GRID_SPACING_M, get_density
@@ -655,7 +657,6 @@ def apply_adjoint_to_unified(
     # GradientWeights(w_com=1.0) expecting an independent COM channel are
     # getting nothing from it — say so rather than let a dead knob look live.
     if gradient_weights.get("w_com") or gradient_weights.get("w_mfg"):
-        import warnings
         warnings.warn(
             "apply_adjoint_to_unified: w_com/w_mfg are inert on the unified "
             "path — the COM gradient is folded into the mass/COM velocity and "
@@ -732,7 +733,6 @@ def apply_adjoint_to_unified(
         top = np.sort(sq)[::-1][:10]
         concentration = float(top.sum()) / total_sq
         if concentration > _SENS_CONCENTRATION_LIMIT:
-            import warnings
             warnings.warn(
                 f"adjoint sensitivity is pathologically spiky: the top 10 of "
                 f"{len(sens):,} values carry {100.0 * concentration:.2f}% of the "
@@ -808,17 +808,39 @@ def apply_adjoint_to_unified(
     # strength. Only the velocity where phi ~ 0 moves the level set, so that is
     # the band worth comparing. Measured 2026-07-28, the two differ enough to
     # matter: whole-grid gave aero 19.7% / mass 80.3%.
+    # Reported TWICE, because one number cannot answer both questions and the
+    # band figure alone reads as a broken adjoint when it isn't. The band is
+    # still mostly aero-free: the sensitivity is scattered from surface vertices
+    # and extended a few cells, so at 0.5 mm spacing 8.0 M band cells hold on the
+    # order of 1e5 vertices' worth of support. Averaging over all of them divides
+    # the aero term by the emptiness around it -- the same support-vs-strength
+    # confound the band was meant to remove, one level down. Measured on the same
+    # step: 19.7% whole-grid, 2.9% band-wide.
+    #   band  -> what the update actually does, aero diluted by empty cells
+    #   where aero acts -> whether the adjoint is healthy where it has support
     _band = np.abs(phi.grid) < (2.0 * GRID_SPACING_M)
     if _band.any():
-        _a_rms = float(np.sqrt(np.mean((w_aero * aero_v)[_band] ** 2)))
-        _m_rms = float(np.sqrt(np.mean((w_mass * masscom_v)[_band] ** 2)))
-        _tot = _a_rms + _m_rms
-        if _tot > 0:
-            print(f"[phi_updater] gradient balance at the interface "
-                  f"(physical, not normalised): aero {100.0 * _a_rms / _tot:5.1f}%"
-                  f"  mass/COM {100.0 * _m_rms / _tot:5.1f}%   "
-                  f"(rms {_a_rms:.3e} vs {_m_rms:.3e} s/m^3, "
-                  f"{int(_band.sum()):,} band cells)")
+        def _share(mask, label):
+            a = float(np.sqrt(np.mean((w_aero * aero_v)[mask] ** 2)))
+            m = float(np.sqrt(np.mean((w_mass * masscom_v)[mask] ** 2)))
+            if a + m <= 0:
+                return
+            print(f"[phi_updater] gradient balance {label}: "
+                  f"aero {100.0 * a / (a + m):5.1f}%  "
+                  f"mass/COM {100.0 * m / (a + m):5.1f}%   "
+                  f"(rms {a:.3e} vs {m:.3e} s/m^3, {int(mask.sum()):,} cells)")
+
+        _share(_band, "over the interface band")
+        _support = _band & (aero_v != 0.0)
+        if _support.any():
+            _share(_support, "where the adjoint has support")
+        else:
+            warnings.warn(
+                "the aero sensitivity is identically zero everywhere in the "
+                "interface band: the adjoint contributes NOTHING to this shape "
+                "update. Check the adjoint solve converged and that the "
+                "sensitivity mapped onto the right mesh vertices.",
+                RuntimeWarning, stacklevel=2)
     # Splatting the surface sensitivity and extending it leaves a few localised
     # SPIKES (max >> rms). The CFL limiter, correctly, throttles the timestep to
     # the fastest-moving cell -- so a handful of artifact spikes would freeze the

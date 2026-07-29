@@ -178,7 +178,13 @@ def evaluate_scalars(
     re = default_rule_envelope()
     out_dir = out_dir or tempfile.gettempdir()
     ref_A_m = mm_to_m(x_front_mm - D_HALO_REF_A_OFFSET_MM)
-    z_base_m = re.z_floor_m + 0.001        # matches virtual_cargo's default margin
+    # CARGO_Z_BASE_M, not `re.z_floor_m + 0.001`. Those are 2.5 mm and 14.0 mm
+    # -- 11.5 mm apart. virtual_cargo derives 14.0 mm from CARGO_TOP_Z_MM (a rule
+    # constraint) and find_cargo_placement/cargo_placement_is_buildable both use
+    # it, so the local value only ever reached cargo_mass_com: the Bayesian
+    # scorer ranked every (W, x_front) with the cargo COM 11.5 mm too low, while
+    # the buildability screen beside it checked the real height.
+    z_base_m = CARGO_Z_BASE_M
     rho_body = get_density("main_body")    # cargo is main_body material
 
     # ── Step 1: cargo placement ──────────────────────────────────────────────
@@ -217,7 +223,7 @@ def evaluate_scalars(
                 # bv.ref_plane_A_m, not the locally-derived ref_A_m — same
                 # value today, but the screen must read the guard's own source.
                 base_geom, base_geom.bv.ref_plane_A_m, d_halo_mm,
-                x_start_m, CARGO_Z_BASE_M, flip,
+                x_start_m, z_base_m, flip,
             )
 
     try:

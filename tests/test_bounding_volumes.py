@@ -236,22 +236,17 @@ def test_bounding_region_voxel_mode():
     _pass("test_bounding_region_voxel_mode")
 
 if __name__ == "__main__":
-    test_sidepod_length_increases_with_W()
-    test_sidepod_length_positive_at_W_min()
-    test_nose_length_matches_x_front()
-    test_nose_origin_at_zero()
-    test_nose_width_matches_T8_5_1_not_general_body_width()
-    test_W_out_of_range_raises()
-    test_d_halo_out_of_range_raises()
-    test_x_front_out_of_range_raises()
-    test_all_shapes_are_positive_ints()
-    test_rearpod_origin_x_clears_rear_wheel()
-    test_main_body_origin_x_equals_ref_plane_A()
-    test_sidepod_is_right_half_only()
-    test_bounding_volumes_stores_x_front()
-    test_ref_plane_properties()
-    test_polygon_point_in_polygon()
-    test_bounding_region_box_mode_all_valid()
-    test_bounding_region_polygon_mode()
-    test_bounding_region_voxel_mode()
-    print("\nAll bounding_volumes tests passed.")
+    # Collected by name. The hand-written list omitted
+    # test_x_front_above_t8_2_nose_overhang_raises -- defined, never called,
+    # while the file still printed "All bounding_volumes tests passed".
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _fail = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        try:
+            getattr(_mod, _n)()
+        except Exception as _e:  # noqa: BLE001
+            print(f"FAIL {_n}: {_e!r}")
+            _fail += 1
+    print("All bounding_volumes tests passed." if not _fail else f"{_fail} failed")
+    _sys.exit(1 if _fail else 0)
