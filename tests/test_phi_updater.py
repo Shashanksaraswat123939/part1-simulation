@@ -266,6 +266,47 @@ def test_aero_gradient_actually_steers_the_shape():
     _pass("test_aero_gradient_actually_steers_the_shape")
 
 
+def test_gradient_balance_is_physical_not_normalised():
+    """Doubling the aero gradient must double its share of the update.
+
+    Under unit-RMS normalisation it could not: each field was rescaled to the
+    same RMS before weighting, so the magnitudes the JAX objective computed were
+    discarded and w_aero:w_mass set the balance instead. That is how a
+    completely inert aero channel went unnoticed -- normalisation guaranteed it
+    arrived at parity with the mass term no matter how small it really was.
+    """
+    geom0 = _make_unified_fake()
+    verts = _surface_vertices(geom0)
+    rng = np.random.default_rng(7)
+    sens = rng.normal(size=len(verts))
+
+    base = _run_update(sens, verts, w_mass=1.0)
+    doubled = _run_update(sens * 2.0, verts, w_mass=1.0)
+    start = _make_unified_fake().phi.grid
+
+    d_base = float(np.max(np.abs(base - start)))
+    d_doubled = float(np.max(np.abs(doubled - start)))
+    assert d_base > 0, "no update happened at all"
+    assert not np.allclose(base, doubled), (
+        "doubling the aero sensitivity changed nothing -- the magnitude is "
+        "being normalised away, which is the bug this replaced")
+    _pass("test_gradient_balance_is_physical_not_normalised")
+
+
+def test_weights_are_ablation_switches_not_magnitude_setters():
+    """w_mass=0 must remove the mass term and nothing else."""
+    geom0 = _make_unified_fake()
+    verts = _surface_vertices(geom0)
+    rng = np.random.default_rng(8)
+    sens = rng.normal(size=len(verts))
+
+    with_mass = _run_update(sens, verts, w_mass=1.0)
+    without = _run_update(sens, verts, w_mass=0.0)
+    assert not np.allclose(with_mass, without), (
+        "w_mass had no effect; --aero-only would be a no-op")
+    _pass("test_weights_are_ablation_switches_not_magnitude_setters")
+
+
 def test_spiky_sensitivity_warns_and_still_steers():
     """A field like the real diverged one must be flagged AND survive the clip.
 
@@ -321,6 +362,8 @@ if __name__ == "__main__":
     test_apply_adjoint_sensitivity_raises_on_none()
     test_apply_adjoint_sensitivity_updates_symmetric_component()
     test_aero_gradient_actually_steers_the_shape()
+    test_gradient_balance_is_physical_not_normalised()
+    test_weights_are_ablation_switches_not_magnitude_setters()
     test_spiky_sensitivity_warns_and_still_steers()
     test_non_finite_sensitivity_raises()
     print("\nAll phi_updater tests passed.")

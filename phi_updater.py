@@ -616,15 +616,24 @@ def apply_adjoint_to_unified(
     Mutates geom in place. The single connected field means the drag gradient
     can move material across what used to be component boundaries.
 
-    IMPORTANT about the balance between drag and mass in the SHAPE UPDATE:
-    combine_gradients normalises each field to unit RMS before weighting, so the
-    real MAGNITUDES of dT_dD20 vs dT_dmass are discarded here -- only the spatial
-    patterns and the scalar weights `w_aero`/`w_mass` survive. The real
-    magnitude balance IS used where it belongs (the objective VALUE and the
-    Bayesian ranking see the true T and gradients); it is NOT what sets the
-    per-step geometry direction. That is set by the weights, which should be
-    calibrated (gradient_combiner.calibrate_gradient_weights) rather than left
-    at 1:1. Do not read this step as "the real physics balance drives the shape".
+    THE BALANCE BETWEEN DRAG AND MASS IS THE PHYSICS', not a tuned constant.
+    Both contributions are dT/dSurface as a per-unit-area density in s/m^3, so
+    they are summed directly and the objective's own gradients decide how much
+    each matters.
+
+    This changed on 2026-07-28. Previously combine_gradients normalised each
+    field to unit RMS before weighting, which discarded the magnitudes the JAX
+    objective had just computed and let `w_aero`/`w_mass` set the balance
+    instead -- so the shape update followed whatever ratio those constants
+    happened to hold, and the old docstring here said as much. Two things had to
+    be fixed first: the adjoint was returning a force COEFFICIENT derivative
+    (see openfoam_adjoint's Aref = 2/UInf^2 note), and it had to be confirmed
+    from the v2412 source that sensitivitySurfacePoints divides by point area,
+    making it a per-area density comparable to the mass term.
+
+    w_aero / w_mass remain as pure multipliers defaulting to 1.0, for ABLATION
+    (--aero-only sets w_mass=0). They no longer set magnitudes, and
+    gradient_combiner.calibrate_gradient_weights is not needed on this path.
     """
     from unified_phi import density_field, enforce_symmetry
 
@@ -756,11 +765,49 @@ def apply_adjoint_to_unified(
     rho = density_field(geom)
     masscom_v = scalar_objective_velocity(phi, rho, objective_gradients, mass_report)
 
-    combined = combine_gradients(
-        aero_gradient=aero_v, mass_gradient=masscom_v,
-        com_gradient=np.zeros_like(aero_v), mfg_gradient=np.zeros_like(aero_v),
-        w_aero=w_aero, w_mass=w_mass, w_com=0.0, w_mfg=0.0,
-    )
+    # PHYSICAL SUM. Both fields are dT/dSurface as a per-unit-area density in
+    # s/m^3, so they add directly and the objective's own gradients set the
+    # balance between drag and mass. No normalisation, no tuned constants.
+    #
+    #   aero:  dT/dD20 (s/N) x dD20/dSurface (N/m^3)   <- adjoint, now a FORCE
+    #                                                     derivative, see
+    #                                                     openfoam_adjoint's
+    #                                                     Aref = 2/UInf^2 note
+    #   mass:  dT/dmass (s/kg) x rho (kg/m^3)  + the COM terms
+    #                                                  <- scalar_objective_velocity
+    #
+    # This replaces combine_gradients, which normalised EACH field to unit RMS
+    # before weighting. That threw away the magnitudes JAX had just computed and
+    # substituted hand-set weights, so the shape update's drag/mass balance was
+    # whatever w_aero:w_mass happened to be rather than what the physics says.
+    # The module docstring in gradient_combiner admits the same thing from the
+    # other side: unit-RMS AMPLIFIES a weak placeholder term to parity with a
+    # real one, which is exactly wrong for the fabricated com_x penalty.
+    #
+    # Two prerequisites had to be true before this was safe, and both were
+    # checked in the v2412 source rather than assumed:
+    #   * sensitivitySurfacePoints divides by accumulated point area
+    #     (includeSurfaceArea defaults false), so the adjoint field is a
+    #     per-AREA density like the mass field, not a per-point lumped value;
+    #   * the objective is now the drag force rather than a coefficient, so
+    #     dT/dD20 in s/N is the right multiplier.
+    #
+    # w_aero / w_mass survive as pure multipliers, defaulting to 1.0. They are
+    # for ABLATION now (--aero-only sets w_mass=0), not for setting magnitudes.
+    combined = w_aero * aero_v + w_mass * masscom_v
+
+    # Report the balance the physics actually chose. It used to be invisible:
+    # normalisation guaranteed the two terms arrived at parity whatever their
+    # real sizes, which is how a completely inert aero channel went unnoticed
+    # for the entire project.
+    _a_rms = float(np.sqrt(np.mean((w_aero * aero_v) ** 2)))
+    _m_rms = float(np.sqrt(np.mean((w_mass * masscom_v) ** 2)))
+    _tot = _a_rms + _m_rms
+    if _tot > 0:
+        print(f"[phi_updater] gradient balance (physical, not normalised): "
+              f"aero {100.0 * _a_rms / _tot:5.1f}%  mass/COM "
+              f"{100.0 * _m_rms / _tot:5.1f}%   "
+              f"(rms {_a_rms:.3e} vs {_m_rms:.3e} s/m^3)")
     # Splatting the surface sensitivity and extending it leaves a few localised
     # SPIKES (max >> rms). The CFL limiter, correctly, throttles the timestep to
     # the fastest-moving cell -- so a handful of artifact spikes would freeze the
