@@ -855,14 +855,21 @@ def apply_adjoint_to_unified(
     # strength. Only the velocity where phi ~ 0 moves the level set, so that is
     # the band worth comparing. Measured 2026-07-28, the two differ enough to
     # matter: whole-grid gave aero 19.7% / mass 80.3%.
-    # Reported TWICE, because one number cannot answer both questions and the
-    # band figure alone reads as a broken adjoint when it isn't. The band is
-    # still mostly aero-free: the sensitivity is scattered from surface vertices
-    # and extended a few cells, so at 0.5 mm spacing 8.0 M band cells hold on the
-    # order of 1e5 vertices' worth of support. Averaging over all of them divides
-    # the aero term by the emptiness around it -- the same support-vs-strength
-    # confound the band was meant to remove, one level down. Measured on the same
-    # step: 19.7% whole-grid, 2.9% band-wide.
+    # Reported TWICE: over the band, and over the cells where the adjoint
+    # actually has support. One number cannot answer both questions -- the band
+    # figure says what the update does, the support figure says whether the
+    # adjoint is healthy where it acts.
+    #
+    # The two used to differ wildly (19.7% vs 2.9% on one step) for a reason
+    # that turned out to be the redistancing bug, not the diagnostic: on the
+    # un-redistanced field phi was two-valued at exactly +/-GRID_SPACING_M, so
+    # EVERY cell satisfied |phi| < 2*dx and the "band" was the whole grid --
+    # 7,990,840 cells at 0.5 mm. The aero term was being divided by the entire
+    # volume. With redistancing the band is a real band (830,754 cells on the
+    # same geometry) and the two figures sit close together, 5.0% and 7.4%.
+    #
+    # Which also means any aero/mass share quoted from a run before 2026-07-30
+    # was measured on a degenerate field and is not comparable to these.
     #   band  -> what the update actually does, aero diluted by empty cells
     #   where aero acts -> whether the adjoint is healthy where it has support
     _band = np.abs(phi.grid) < (2.0 * GRID_SPACING_M)
