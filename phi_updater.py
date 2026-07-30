@@ -756,6 +756,50 @@ def apply_adjoint_to_unified(
             if cap > 0:
                 sens = np.clip(sens, -cap, cap)
 
+    # REDISTANCE FIRST. Without this the Stage-2 adjoint loop does not move the
+    # car at all.
+    #
+    # hj_update steps `phi - dt*V*|grad phi|`, and cfl_limited_dt sizes dt on the
+    # stated assumption that "phi is a signed distance ... so the surface
+    # displacement per step is dt*|V| metres". build_unified_geometry does not
+    # produce a distance function -- _init_field's "full" mode writes a CONSTANT
+    # -GRID_SPACING_M everywhere, with the comment "reinitialise_sdf will
+    # redistance it on the first update", and nothing ever did. Measured on a
+    # freshly built car, |grad phi| in the interface band has MEDIAN 0.000 with
+    # 87.5% of band cells below 0.1, so the update was multiplying the velocity
+    # by ~zero.
+    #
+    # The live 2026-07-29 sweep is what that looks like from outside: ten
+    # candidates over five d_halo values, twenty CFD+adjoint solves, and total
+    # mass identical to 0.75 mg across every one of them -- 0.149424865 kg on
+    # every iteration 1 and 0.149424115 on every iteration 2, the same to nine
+    # decimals from d_halo 16 through 45.72. D20 wandered 3-7% and race time got
+    # worse in 5 of 5 pairs, which is remeshing noise on a shape that never
+    # changed, not a search. It also explains the aero share alternating 3% / 20%
+    # by iteration index in all six pairs: iteration 1 splatted onto an as-built
+    # field with no gradient.
+    #
+    # A/B over four steps at 1 mm, mass/COM term only:
+    #     without reinit  -0.008, -3.619, +0.000, -0.127 g   |grad phi| 0.000
+    #     with reinit     -8.915, -8.669, -3.119, -3.659 g   |grad phi| 1.000
+    # 1100x the first step, and monotone instead of stalling.
+    #
+    # At the START of the step, not the end, and not at build time:
+    #   * the splat and extend_velocity below both READ the field, and
+    #     extend_velocity's upwind direction is sign(phi)*grad_phi/|grad_phi|,
+    #     which is meaningless on a constant -- so the first update of every
+    #     candidate needs the field fixed before they run, not after;
+    #   * redistancing in build_unified_geometry instead was tried and reverted:
+    #     it turns the as-built staircase isosurface into a smooth one that
+    #     decimates to 1.2 deg minimum angle, under the 10 deg snappyHexMesh gate
+    #     (test_remap_is_not_the_same_as_rebuilding catches it).
+    #
+    # Stage 1's evolution loop has always redistanced (bayesian_outer_search, in
+    # both variants), which is why the no-CFD path reaches the 48 g floor and
+    # this one never left 149 g. Cost is ~50 Godunov pseudo-steps against a
+    # 15-minute CFD solve on the same iteration, so no cadence.
+    reinitialise_sdf(phi)
+
     # Aero velocity: splat right-half sensitivity + its y-mirror onto the field.
     vel_r = _splat_vertex_sensitivity_to_grid(sens, verts, phi)
     verts_l = verts.copy()
@@ -857,31 +901,4 @@ def apply_adjoint_to_unified(
         if cap > 0:
             combined = np.clip(combined, -cap, cap)
     hj_update(phi, combined, cfl_limited_dt(combined, dt))
-    # REDISTANCE. Without this the Stage-2 adjoint loop does not move the car.
-    #
-    # hj_update steps `phi - dt*V*|grad phi|`, so the surface displacement is
-    # dt*V*|grad phi| -- and cfl_limited_dt's whole derivation assumes
-    # |grad phi| ~ 1 ("With phi a signed distance ... the surface displacement
-    # per step is dt*|V| metres"). build_unified_geometry does not produce a
-    # distance function: measured on a freshly built car, |grad phi| in the
-    # interface band has MEDIAN 0.000 and 87.5% of band cells sit below 0.1. So
-    # the update was multiplying the velocity by ~zero and the geometry stood
-    # still, whatever the adjoint said.
-    #
-    # That is what the live 2026-07-29 sweep actually showed: total mass
-    # identical to 0.75 mg across all ten candidates and all five d_halo values,
-    # while D20 wandered 3-7% -- remeshing noise on a shape that never changed.
-    # A/B over four steps at 1 mm, mass/COM term only:
-    #     without reinit  -0.008, -3.619, +0.000, -0.127 g   |grad phi| 0.000
-    #     with reinit     -8.915, -8.669, -3.119, -3.659 g   |grad phi| 1.000
-    # 6.5x the material removed, and monotone instead of stalling.
-    #
-    # Stage 1's evolution loop (bayesian_outer_search) has always redistanced,
-    # which is why the no-CFD path reaches the 48 g floor and this one never
-    # left 149 g. The module docstring claimed "Includes SDF reinitialisation"
-    # the whole time; only the other caller did.
-    #
-    # Cost is ~50 Godunov pseudo-steps over the grid, against a 15-minute CFD
-    # solve on the same iteration. Not worth a cadence.
-    reinitialise_sdf(phi)
     enforce_symmetry(geom)

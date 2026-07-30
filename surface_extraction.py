@@ -14,6 +14,7 @@ open meshes — the open boundary IS the body interface, not a defect. The quali
 gate skips the watertight check for the attachment-boundary edges (D1 fixed).
 """
 from __future__ import annotations
+import warnings
 import numpy as np
 
 from geometry_contract import (
@@ -118,17 +119,52 @@ def _repair_mesh(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
     trimesh.repair.fix_normals(mesh)
     trimesh.repair.fix_winding(mesh)
 
-    areas = mesh.area_faces
-    mask = areas > 1e-12
-    if not mask.all():
-        mesh.update_faces(mask)
-        mesh.process()
-
+    # SMOOTH FIRST, THEN clean up degenerates -- the order is the whole point.
+    #
+    # The tiny-face deletion used to run BEFORE this Taubin pass, and it was the
+    # single worst thing in the extraction pipeline: update_faces punches a hole
+    # for every face it removes, and trimesh's fill_holes only closes simple
+    # holes, so scattered slivers left the mesh open. Measured on a carved car
+    # at 1 mm: marching cubes handed over 128,280 triangles, watertight; repair
+    # gave back 128,202, NOT watertight. The caller then raised "Mesh is not
+    # watertight after repair" and Part 3 logged geometry_rejected -- which is
+    # exactly how the first re-run after the redistancing fix died on its second
+    # iteration.
+    #
+    # The deletion was also unnecessary. Taubin smoothing collapses the
+    # degenerate faces on its own, by moving vertices rather than removing
+    # triangles, so nothing is punched out. Measured over four carve steps at
+    # level=0.0, smoothing with NO deletion at all:
+    #     raw          watertight, 32-72 degenerate faces, min angle 0.00 deg
+    #     +taubin      watertight, 0 degenerate faces,     min angle 14-24 deg
+    # against the 10 deg snappyHexMesh gate. It reads as a leftover: the Taubin
+    # pass was added 2026-07-15 and the deletion it made redundant was never
+    # taken out, so the two fought and the deletion won.
+    #
+    # Both orderings were tried before settling here: reordering the deletion to
+    # come first still lost watertightness, and merging coincident vertices
+    # before dropping degenerate faces broke it on the very first step.
     try:
         import trimesh.smoothing as _sm
         _sm.filter_taubin(mesh, iterations=10)
     except Exception:
         pass
+
+    # Belt and braces. Measures zero on every case tested, so it should not fire
+    # -- but if smoothing ever leaves a degenerate face behind, dropping it and
+    # refilling is still better than shipping a zero-area triangle to
+    # snappyHexMesh. Warns, because silently changing topology here is what
+    # caused the original bug.
+    mask = mesh.area_faces > 1e-12
+    if not mask.all():
+        warnings.warn(
+            f"{int((~mask).sum())} degenerate faces survived Taubin smoothing; "
+            f"dropping them and refilling. If this fires, check whether the "
+            f"smoothing iterations are enough for this geometry.",
+            RuntimeWarning, stacklevel=2)
+        mesh.update_faces(mask)
+        mesh.process()
+        trimesh.repair.fill_holes(mesh)
 
     return mesh
 
@@ -557,6 +593,43 @@ def _count_boundary_edges(mesh: "trimesh.Trimesh") -> int:
     return len(grp.group_rows(mesh.edges_sorted, require_count=1))
 
 
+def _retry_triangle_quality(mesh):
+    """Candidate meshes to try when a triangle-quality gate fails, best first.
+
+    SMOOTHING BEFORE DECIMATION. Both gates below used to attempt only
+    `simplify_quadric_decimation(percent=0.9)`, which is the wrong tool by this
+    module's own finding -- see the 2026-07-15 note in _repair_mesh: "quadric
+    decimation does not fix this (it targets face count, not angle quality, and
+    empirically made angles worse on a test sphere)". The same note records what
+    does work: Taubin smoothing took min angle from ~2.6 deg to 16-20+ deg at
+    under 0.5% volume change, and it is volume-preserving, so it does not shrink
+    the car the way plain Laplacian does.
+
+    Found because a carved geometry failed with "Min angle 0.2 deg < 10.0 deg
+    after simplification" -- the gate had decimated a mesh whose angles
+    decimation cannot repair, then rejected it. Decimation is kept as a
+    fallback: it is the right move when the problem is genuinely too many
+    triangles rather than badly shaped ones.
+
+    Returns a list of (label, mesh) candidates; each is a copy, so a rejected
+    attempt cannot mutate the input.
+    """
+    out = []
+    try:
+        import trimesh.smoothing as _sm
+        for iters in (10, 30):
+            cand = mesh.copy()
+            _sm.filter_taubin(cand, iterations=iters)
+            out.append((f"taubin x{iters}", cand))
+    except Exception:
+        pass
+    try:
+        out.append(("quadric 0.9", mesh.simplify_quadric_decimation(percent=0.9)))
+    except Exception:
+        pass
+    return out
+
+
 def _triangle_aspect_ratios(mesh: "trimesh.Trimesh") -> np.ndarray:
     """
     Per-face aspect ratio: longest_edge^2 * sqrt(3) / (4*area).
@@ -631,33 +704,24 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
         min_angle_deg = None
 
     if min_angle_deg is not None and min_angle_deg < MESH_MIN_TRIANGLE_ANGLE_DEG:
-        simplified = None
-        try:
-            simplified = mesh.simplify_quadric_decimation(percent=0.9)
-        except Exception:
-            pass
-        if simplified is not None:
+        best = None
+        for label, cand in _retry_triangle_quality(mesh):
             try:
-                angles_rad2 = trimesh.triangles.angles(simplified.triangles)
-                if float(np.degrees(angles_rad2.min())) >= MESH_MIN_TRIANGLE_ANGLE_DEG:
-                    mesh.vertices = simplified.vertices
-                    mesh.faces = simplified.faces
-                else:
-                    raise MeshQualityFailure(
-                        f"{component}: Triangle quality below snappyHexMesh tolerance "
-                        f"after simplification. Min angle "
-                        f"{np.degrees(angles_rad2.min()):.1f}° "
-                        f"< {MESH_MIN_TRIANGLE_ANGLE_DEG}°."
-                    )
-            except MeshQualityFailure:
-                raise
+                got = float(np.degrees(trimesh.triangles.angles(cand.triangles).min()))
             except Exception:
-                pass
+                continue
+            if best is None or got > best[1]:
+                best = (label, got, cand)
+            if got >= MESH_MIN_TRIANGLE_ANGLE_DEG:
+                mesh.vertices = cand.vertices
+                mesh.faces = cand.faces
+                break
         else:
+            got = f"{best[1]:.1f}° via {best[0]}" if best else "no candidate produced"
             raise MeshQualityFailure(
-                f"{component}: Triangle quality below snappyHexMesh tolerance "
-                f"(min angle {min_angle_deg:.1f}° < {MESH_MIN_TRIANGLE_ANGLE_DEG}°) "
-                "and simplification failed."
+                f"{component}: Triangle quality below snappyHexMesh tolerance. "
+                f"Min angle {min_angle_deg:.1f}° < {MESH_MIN_TRIANGLE_ANGLE_DEG}°; "
+                f"best repair reached {got}."
             )
 
     # ── Triangle aspect ratio check ──────────────────────────────────────
@@ -668,31 +732,23 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
         max_ratio = None
 
     if max_ratio is not None and max_ratio > MESH_MAX_ASPECT_RATIO:
-        simplified = None
-        try:
-            simplified = mesh.simplify_quadric_decimation(percent=0.9)
-        except Exception:
-            pass
-        if simplified is not None:
+        best = None
+        for label, cand in _retry_triangle_quality(mesh):
             try:
-                ratios2 = _triangle_aspect_ratios(simplified)
-                if float(ratios2.max()) <= MESH_MAX_ASPECT_RATIO:
-                    mesh.vertices = simplified.vertices
-                    mesh.faces = simplified.faces
-                else:
-                    raise MeshQualityFailure(
-                        f"{component}: Triangle aspect ratio "
-                        f"{float(ratios2.max()):.1f} > {MESH_MAX_ASPECT_RATIO} "
-                        "after simplification."
-                    )
-            except MeshQualityFailure:
-                raise
+                got = float(_triangle_aspect_ratios(cand).max())
             except Exception:
-                pass
+                continue
+            if best is None or got < best[1]:
+                best = (label, got, cand)
+            if got <= MESH_MAX_ASPECT_RATIO:
+                mesh.vertices = cand.vertices
+                mesh.faces = cand.faces
+                break
         else:
+            got = f"{best[1]:.1f} via {best[0]}" if best else "no candidate produced"
             raise MeshQualityFailure(
                 f"{component}: Triangle aspect ratio {max_ratio:.1f} > "
-                f"{MESH_MAX_ASPECT_RATIO} and simplification failed."
+                f"{MESH_MAX_ASPECT_RATIO}; best repair reached {got}."
             )
 
 

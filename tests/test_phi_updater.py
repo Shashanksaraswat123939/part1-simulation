@@ -440,11 +440,19 @@ def test_the_update_actually_moves_the_surface():
         gm = _grad_magnitude(g.phi.grid.astype(np.float64))
         return float(np.median(gm[np.abs(g.phi.grid) < 2.0 * _dx]))
 
+    # The as-built field is deliberately NOT a distance function: _init_field's
+    # "full" mode writes a constant -GRID_SPACING_M, and redistancing it at
+    # BUILD time was tried and reverted (it turns the staircase isosurface into
+    # a smooth one that decimates below the 10 deg angle gate --
+    # test_remap_is_not_the_same_as_rebuilding catches that). So the update owns
+    # the redistancing, and does it FIRST, before the splat and the velocity
+    # extension that read the field. Both ends are asserted here: flat going in,
+    # a distance function coming out, and material actually removed.
     base, _verts = _real_geom()
     assert band_grad_median(base) < 0.5, (
-        "the as-built field is already a distance function; if that is "
-        "deliberate this test's premise changed, but check the update still "
-        "moves the surface")
+        f"|grad phi| is {band_grad_median(base):.3f} as built. If the builder "
+        "now redistances, check test_remap_is_not_the_same_as_rebuilding still "
+        "passes -- that is what made this the update's job instead")
 
     before = int((base.phi.grid < 0).sum())
     after, g = _step_real(0.0, w_mass=1.0)
