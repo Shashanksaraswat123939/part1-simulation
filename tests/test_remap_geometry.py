@@ -121,10 +121,130 @@ def test_remapped_field_is_a_usable_signed_distance_field():
     assert np.isfinite(g).all(), "non-finite values in the remapped field"
 
 
+
+
+def test_warm_start_carries_a_CARVED_field_to_the_next_d_halo():
+    """Stage 2 warm-starts each d_halo from the previous one's converged phi.
+
+    Until the redistancing fix of 2026-07-30 the geometry never changed, so
+    every warm start remapped an untouched envelope and this path had never run
+    on a carved car -- the only shape it will ever see in production. Three
+    things have to survive the remap, and a fourth has to still work after it:
+
+      * the CARVING, not just the field. A remap that quietly reset to the
+        envelope would look fine (valid geometry, plausible mass) and silently
+        throw away every CFD solve spent getting there;
+      * |grad phi| ~ 1, or the next update is the no-op this whole fix was
+        about;
+      * a watertight single-body extraction, since the next iteration meshes it;
+      * one more update step, at the NEW d_halo.
+
+    d_halo 43.72 is in the list on purpose: it is the value that killed two
+    earlier runs.
+    """
+    import copy
+    import warnings
+    from types import SimpleNamespace
+
+    import numpy as np
+    import phi_updater as pu
+    from geometry_contract import GRID_SPACING_M
+    from unified_phi import (build_unified_geometry, compute_mass_com,
+                             extract_half_surface, extract_unified_surface,
+                             remap_geometry)
+
+    grads = {"dT_dD20": 0.4868, "dT_dmass": 17.4478, "dT_dh_com": -0.2391,
+             "dT_dx_com": 0.000251, "dT_dL": -0.004868}
+
+    class _MR:
+        total_mass_kg, com_x_m, com_z_m = 0.1494, 0.122, 0.0296
+
+    def _mass(g):
+        return sum(c.mass_kg for c in compute_mass_com(g))
+
+    def _band_grad(g):
+        gm = pu._grad_magnitude(g.phi.grid.astype(np.float64))
+        return float(np.median(gm[np.abs(g.phi.grid) < 2.0 * GRID_SPACING_M]))
+
+    # x_front 42.9 is what Stage 1 chose for the live 2026-07-29 run. 46.0
+    # paired with d_halo=43.72 is infeasible -- the cargo collides with the halo
+    # pocket, remap_geometry says so, and run_two_stage's _feasible_d_halo would
+    # never hand that pair to the loop. Using the real pair keeps this test
+    # about warm starting rather than about placement validity.
+    # with_cargo=False on purpose. The cargo-erosion guard is measured in CELLS
+    # and this test runs coarse, so it rejects at 2 mm placements that are legal
+    # at the production 0.5 mm (measured: Stage 1's own choice for the live run,
+    # x_start 42.9 mm / flip, reads 6.9% eroded at coarse and builds fine at
+    # production spacing). That is a real wrinkle in the guard, but it is not
+    # what this test is about -- carrying a CARVED field across a d_halo change
+    # is, and cargo placement validity has its own tests in test_virtual_cargo.
+    base = build_unified_geometry(120.0, 42.9, 20.0, init_mode="full",
+                                  with_cargo=False)
+    verts = np.asarray(extract_half_surface(base).vertices)
+    rng = np.random.default_rng(3)
+    sens = 3.497e3 * rng.normal(size=len(verts))
+    weights = {"w_aero": 1.0, "w_mass": 1.0, "w_com": 0.0, "w_mfg": 0.0}
+
+    def _step(g):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pu.apply_adjoint_to_unified(
+                g, sens, SimpleNamespace(vertices=verts), 0.5, weights,
+                grads, _MR())
+
+    envelope_mass = _mass(base)
+    carved = copy.deepcopy(base)
+    for _ in range(4):
+        _step(carved)
+    carved_mass = _mass(carved)
+    assert carved_mass < 0.95 * envelope_mass, (
+        f"the carve did not remove material ({envelope_mass*1000:.2f} g -> "
+        f"{carved_mass*1000:.2f} g); this test cannot say anything about warm "
+        "starting a carved field if the field was never carved")
+
+    for new_d in (16.0, 43.72):
+        w = remap_geometry(carved, W_mm=120.0, x_front_mm=42.9,
+                           d_halo_mm=new_d, with_cargo=False)
+        assert abs(w.d_halo_mm - new_d) < 1e-9, "remap ignored the new d_halo"
+
+        m = _mass(w)
+        assert m < 0.95 * envelope_mass, (
+            f"warm start to d_halo={new_d} came back at {m*1000:.2f} g against "
+            f"a {envelope_mass*1000:.2f} g envelope and a {carved_mass*1000:.2f} g "
+            "carved car -- the remap reset the geometry and threw away every "
+            "CFD solve that produced it")
+
+        g = _band_grad(w)
+        assert abs(g - 1.0) < 0.05, (
+            f"|grad phi| is {g:.3f} after warm starting to d_halo={new_d}, not "
+            "~1; the first update at the new d_halo would be a no-op")
+
+        mesh, _rep = extract_unified_surface(w, allow_inaccessible=True)
+        assert mesh.is_watertight and mesh.body_count == 1, (
+            f"warm start to d_halo={new_d} produced a mesh that is "
+            f"watertight={mesh.is_watertight} with {mesh.body_count} bodies; "
+            "the next iteration has to hand this to snappyHexMesh")
+
+        before = _mass(w)
+        _step(w)
+        assert _mass(w) < before, (
+            f"the first update after warm starting to d_halo={new_d} removed "
+            "nothing")
+
+
 if __name__ == "__main__":
-    for t in (test_remap_preserves_the_shape_across_a_grid_change,
-              test_remap_is_not_the_same_as_rebuilding,
-              test_remapped_field_is_a_usable_signed_distance_field):
-        _run(t)
-    print(f"\n{_passed} passed, {_failed} failed")
-    sys.exit(1 if _failed else 0)
+    # Collected by name; a hand-written call list silently drops every test
+    # appended below it, which has already hidden several tests in this repo.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _passed = _failed = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        try:
+            getattr(_mod, _n)()
+            print(f"PASS {_n}")
+            _passed += 1
+        except Exception as _e:  # noqa: BLE001
+            print(f"FAIL {_n}: {_e}")
+            _failed += 1
+    print(f"{_passed} passed, {_failed} failed")
+    _sys.exit(1 if _failed else 0)
