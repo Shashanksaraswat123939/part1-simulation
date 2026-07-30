@@ -94,9 +94,12 @@ def test_combine_gradients_zero_safe():
 
 
 def test_splat_vertex_sensitivity_places_value_in_correct_cell():
+    # Live value: _real_geom() rewrites geometry_contract.GRID_SPACING_M via
+    # coarse.use_spacing, and the module-level import above froze the old one.
+    import geometry_contract as _gc
     phi = _make_phi()
     ox, oy, oz = phi.bv.origin_m
-    dx = GRID_SPACING_M
+    dx = _gc.GRID_SPACING_M
     # Single vertex placed exactly at cell (5,6,7)'s centre
     target = (ox + 5 * dx, oy + 6 * dx, oz + 7 * dx)
     vertices = np.array([target])
@@ -112,9 +115,10 @@ def test_splat_vertex_sensitivity_places_value_in_correct_cell():
 
 
 def test_splat_vertex_sensitivity_averages_multiple_hits():
+    import geometry_contract as _gc
     phi = _make_phi()
     ox, oy, oz = phi.bv.origin_m
-    dx = GRID_SPACING_M
+    dx = _gc.GRID_SPACING_M
     target = (ox + 5 * dx, oy + 6 * dx, oz + 7 * dx)
     # Two vertices very close together, both rounding to the same cell
     vertices = np.array([target, (target[0] + 1e-6, target[1], target[2])])
@@ -237,60 +241,112 @@ def _run_update(sens, verts, w_mass=0.0):
     return geom.phi.grid.copy()
 
 
+
+# --------------------------------------------------------------------------
+# Real-geometry probes.
+#
+# The _make_unified_fake toy above is a ~20-cell grid, and the update now
+# redistances: reinitialise_sdf runs 50 pseudo-steps at 0.4 cells each, which
+# on a 20-cell grid propagates across the WHOLE domain and reconverges to the
+# exact distance function of the toy's near-spherical interface, erasing the
+# local detail the step just produced. On the real 8M-cell grid those same 50
+# steps reach only 20 cells, so local structure survives -- which is why the
+# toy stopped being able to see aero steering while the real geometry still
+# can. Tests that ask "did the shape change" therefore build a real car at a
+# coarse spacing and measure the SOLID CELL COUNT (the geometry) rather than
+# raw phi values (which redistancing rewrites far from the surface).
+# --------------------------------------------------------------------------
+_REAL_CACHE = {}
+
+
+def _real_geom():
+    import os
+    import sys as _s
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _sb = os.path.join(os.path.dirname(_here), "sandbox")
+    if _sb not in _s.path:
+        _s.path.insert(0, _sb)
+    if "geom" not in _REAL_CACHE:
+        import coarse
+        coarse.use_spacing(2.0)
+        from unified_phi import build_unified_geometry, extract_half_surface
+        g = build_unified_geometry(120.0, 46.0, 20.0, init_mode="full",
+                                   with_cargo=False)
+        _REAL_CACHE["geom"] = g
+        _REAL_CACHE["verts"] = np.asarray(extract_half_surface(g).vertices)
+    return _REAL_CACHE["geom"], _REAL_CACHE["verts"]
+
+
+_REAL_GRADS = {"dT_dD20": 0.4868, "dT_dmass": 17.4478, "dT_dh_com": -0.2391,
+               "dT_dx_com": 0.000251, "dT_dL": -0.004868}
+
+
+class _RealMassReport:
+    total_mass_kg, com_x_m, com_z_m = 0.1494, 0.122, 0.0296
+
+
+def _step_real(sens_scale, w_mass, sign=1.0, seed=3):
+    """One production update on a real car; returns (solid cell count, geom)."""
+    import copy
+    import warnings as _w
+    from types import SimpleNamespace
+    from phi_updater import apply_adjoint_to_unified
+    base, verts = _real_geom()
+    rng = np.random.default_rng(seed)
+    sens = sign * sens_scale * rng.normal(size=len(verts))
+    g = copy.deepcopy(base)
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        apply_adjoint_to_unified(
+            g, sens, SimpleNamespace(vertices=verts), 0.5,
+            {"w_aero": 1.0, "w_mass": w_mass, "w_com": 0.0, "w_mfg": 0.0},
+            _REAL_GRADS, _RealMassReport())
+    return int((g.phi.grid < 0).sum()), g
+
+
 def test_aero_gradient_actually_steers_the_shape():
     """THE regression test for the 2026-07-27 silent failure.
 
     With the mass term off, the shape update is the aero gradient and nothing
-    else, so negating the sensitivity MUST produce a materially different field.
+    else, so negating the sensitivity MUST produce a materially different body.
     It did not for a full smoke run: the adjoint mesh-movement chain returned a
     field whose top 10 points carried 99.33% of the sum of squares, unit-RMS
     normalisation crushed everything else, and flipping the sign moved the
-    geometry by 0.04%. Every existing test passed throughout, because they all
-    feed a synthetic well-conditioned sensitivity.
-    """
-    geom0 = _make_unified_fake()
-    verts = _surface_vertices(geom0)
-    rng = np.random.default_rng(1)
-    sens = rng.normal(size=len(verts))
+    geometry by 0.04%. Every test passed throughout, because they all fed a
+    synthetic well-conditioned sensitivity to a toy grid.
 
-    pos = _run_update(sens, verts)
-    neg = _run_update(-sens, verts)
-    delta = float(np.max(np.abs(pos - neg)))
-    baseline = float(np.max(np.abs(pos - _make_unified_fake().phi.grid)))
-    assert baseline > 0, "aero update did not move the field at all"
-    assert delta > 0.25 * baseline, (
-        f"negating the sensitivity changed the field by {delta:.3e} against a "
-        f"total step of {baseline:.3e} ({100.0 * delta / baseline:.2f}%); the "
-        f"aero gradient is not steering the shape"
-    )
-    _pass("test_aero_gradient_actually_steers_the_shape")
+    Measured on the solid cell count, not on phi: the update redistances, so
+    phi far from the surface is rewritten every step and a phi-difference norm
+    would mostly measure that rebuild.
+    """
+    pos, _ = _step_real(3.497e3, w_mass=0.0, sign=+1.0)
+    neg, _ = _step_real(3.497e3, w_mass=0.0, sign=-1.0)
+    assert pos != neg, (
+        "negating the sensitivity left the same {:,} solid cells -- the aero "
+        "gradient is not steering the shape".format(pos))
 
 
 def test_gradient_balance_is_physical_not_normalised():
-    """Doubling the aero gradient must double its share of the update.
+    """Doubling the aero gradient must change its share of the update.
 
     Under unit-RMS normalisation it could not: each field was rescaled to the
-    same RMS before weighting, so the magnitudes the JAX objective computed were
-    discarded and w_aero:w_mass set the balance instead. That is how a
-    completely inert aero channel went unnoticed -- normalisation guaranteed it
-    arrived at parity with the mass term no matter how small it really was.
+    same RMS before weighting, so the magnitudes the JAX objective computed
+    were discarded and w_aero:w_mass set the balance instead. That is how a
+    completely inert aero channel went unnoticed.
+
+    The mass term must be ON for this to mean anything. With w_mass=0 the whole
+    velocity is aero and cfl_limited_dt divides dt by max|V|, so the step is
+    exactly CFL*dx whatever the sensitivity's scale and the result is
+    scale-invariant BY CONSTRUCTION (measured: 1.0, 1e2 and 1e4 give
+    bit-identical fields). Only against a fixed mass term does aero's magnitude
+    change the balance.
     """
-    geom0 = _make_unified_fake()
-    verts = _surface_vertices(geom0)
-    rng = np.random.default_rng(7)
-    sens = rng.normal(size=len(verts))
-
-    base = _run_update(sens, verts, w_mass=1.0)
-    doubled = _run_update(sens * 2.0, verts, w_mass=1.0)
-    start = _make_unified_fake().phi.grid
-
-    d_base = float(np.max(np.abs(base - start)))
-    d_doubled = float(np.max(np.abs(doubled - start)))
-    assert d_base > 0, "no update happened at all"
-    assert not np.allclose(base, doubled), (
-        "doubling the aero sensitivity changed nothing -- the magnitude is "
-        "being normalised away, which is the bug this replaced")
-    _pass("test_gradient_balance_is_physical_not_normalised")
+    single, _ = _step_real(3.497e3, w_mass=1.0)
+    double, _ = _step_real(2.0 * 3.497e3, w_mass=1.0)
+    assert single != double, (
+        "doubling the aero sensitivity left the same {:,} solid cells -- the "
+        "magnitude is being normalised away, which is the bug this "
+        "replaced".format(single))
 
 
 def test_weights_are_ablation_switches_not_magnitude_setters():
@@ -311,26 +367,39 @@ def test_spiky_sensitivity_warns_and_still_steers():
     """A field like the real diverged one must be flagged AND survive the clip.
 
     Ten values at 1e55 against a unit-scale background reproduces the measured
-    99.33% concentration. Without the pre-normalisation clip this update is
-    indistinguishable from its own negation.
-    """
-    import warnings
-    geom0 = _make_unified_fake()
-    verts = _surface_vertices(geom0)
-    rng = np.random.default_rng(2)
-    sens = rng.normal(size=len(verts))
-    sens[:10] = 1e55
+    99.33% concentration that made the aero channel inert. The guard must warn,
+    and the clipped field must still move the geometry -- a clip that flattened
+    the signal would be the same silent failure by another route.
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        pos = _run_update(sens, verts)
-        assert any(issubclass(w.category, RuntimeWarning)
-                   and "pathologically spiky" in str(w.message) for w in caught), \
-            "spiky sensitivity did not raise the concentration warning"
-    neg = _run_update(-sens, verts)
-    delta = float(np.max(np.abs(pos - neg)))
-    assert delta > 0, "clipped spiky sensitivity still does not steer the shape"
-    _pass("test_spiky_sensitivity_warns_and_still_steers")
+    On the real car, not the toy: the update redistances, and on a 20-cell grid
+    that reconverges the whole domain to the exact distance function of the
+    toy's interface, erasing what the step just did.
+    """
+    import warnings as _w
+    base, verts = _real_geom()
+    rng = np.random.default_rng(11)
+    sens = 3.497e3 * rng.normal(size=len(verts))
+    sens[:10] = 1.0e55
+
+    import copy
+    from types import SimpleNamespace
+    from phi_updater import apply_adjoint_to_unified
+    g = copy.deepcopy(base)
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        apply_adjoint_to_unified(
+            g, sens, SimpleNamespace(vertices=verts), 0.5,
+            {"w_aero": 1.0, "w_mass": 1.0, "w_com": 0.0, "w_mfg": 0.0},
+            _REAL_GRADS, _RealMassReport())
+    assert any("spiky" in str(c.message).lower() for c in caught), (
+        "a sensitivity with 10 points carrying ~all the energy was not "
+        "flagged; that field made the aero channel inert for a whole smoke "
+        "run. Warnings seen: " + "; ".join(str(c.message)[:60] for c in caught))
+
+    before = int((base.phi.grid < 0).sum())
+    after = int((g.phi.grid < 0).sum())
+    assert before != after, (
+        "clipped spiky sensitivity still does not steer the shape")
 
 
 def test_non_finite_sensitivity_raises():
@@ -347,23 +416,65 @@ def test_non_finite_sensitivity_raises():
     _fail("test_non_finite_sensitivity_raises", "no ValueError for NaN sensitivity")
 
 
+
+def test_the_update_actually_moves_the_surface():
+    """A step must redistance, or it is a no-op.
+
+    hj_update steps `phi - dt*V*|grad phi|`, and cfl_limited_dt sizes dt on the
+    assumption that |grad phi| ~ 1. build_unified_geometry does NOT hand back a
+    distance function -- measured on a freshly built car, |grad phi| in the
+    interface band has median 0.000 and 87.5% of band cells sit below 0.1. So
+    without redistancing the velocity is multiplied by ~zero and the geometry
+    stands still however good the adjoint is.
+
+    That is not hypothetical. The live sweep of 2026-07-29 produced ten
+    candidates across five d_halo values whose total mass was identical to
+    0.75 mg, while D20 wandered 3-7% -- pure remeshing noise on a shape that
+    never changed. Stage 1's evolution loop had always redistanced, which is
+    why the no-CFD path reached the 48 g floor and this one never left 149 g.
+    """
+    from phi_updater import _grad_magnitude
+    from geometry_contract import GRID_SPACING_M as _dx
+
+    def band_grad_median(g):
+        gm = _grad_magnitude(g.phi.grid.astype(np.float64))
+        return float(np.median(gm[np.abs(g.phi.grid) < 2.0 * _dx]))
+
+    base, _verts = _real_geom()
+    assert band_grad_median(base) < 0.5, (
+        "the as-built field is already a distance function; if that is "
+        "deliberate this test's premise changed, but check the update still "
+        "moves the surface")
+
+    before = int((base.phi.grid < 0).sum())
+    after, g = _step_real(0.0, w_mass=1.0)
+
+    assert abs(band_grad_median(g) - 1.0) < 0.05, (
+        "|grad phi| is {:.3f} after a step, not ~1: the update did not "
+        "redistance and the next step will not move the "
+        "surface".format(band_grad_median(g)))
+    # The no-op regime removed 0.008 g of a 108 g body in one step. Anything
+    # this small is that failure coming back.
+    moved = abs(after - before)
+    assert moved > 0.001 * before, (
+        "one step moved {:,} of {:,} solid cells ({:.4f}%) -- the shape update "
+        "is not moving material (see the redistancing note in "
+        "apply_adjoint_to_unified)".format(moved, before, 100.0 * moved / before))
+
+
 if __name__ == "__main__":
-    test_godunov_gradient_returns_array()
-    test_grad_magnitude_positive()
-    test_hj_update_changes_grid()
-    test_hj_update_preserves_hard_constraints()
-    test_reinitialise_sdf_runs()
-    test_extend_velocity_returns_same_shape()
-    test_combine_gradients_normalizes()
-    test_combine_gradients_zero_safe()
-    test_splat_vertex_sensitivity_places_value_in_correct_cell()
-    test_splat_vertex_sensitivity_averages_multiple_hits()
-    test_apply_adjoint_sensitivity_mismatched_lengths_raises()
-    test_apply_adjoint_sensitivity_raises_on_none()
-    test_apply_adjoint_sensitivity_updates_symmetric_component()
-    test_aero_gradient_actually_steers_the_shape()
-    test_gradient_balance_is_physical_not_normalised()
-    test_weights_are_ablation_switches_not_magnitude_setters()
-    test_spiky_sensitivity_warns_and_still_steers()
-    test_non_finite_sensitivity_raises()
-    print("\nAll phi_updater tests passed.")
+    # Collected by name. The hand-written call list below this line silently
+    # dropped every test appended after it -- the bug that has already hidden
+    # five tests in this repo, including the one guarding the no-op update.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _fail = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        try:
+            getattr(_mod, _n)()
+            print(f"PASS {_n}")
+        except Exception as _e:  # noqa: BLE001
+            print(f"FAIL {_n}: {_e!r}")
+            _fail += 1
+    print("All phi_updater tests passed." if not _fail else f"{_fail} failed")
+    _sys.exit(1 if _fail else 0)

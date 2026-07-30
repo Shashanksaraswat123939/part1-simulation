@@ -4,8 +4,11 @@ phi_updater.py --- Hamilton-Jacobi level-set evolution and adjoint sensitivity.
 Applies adjoint surface sensitivity to phi grids via the Hamilton-Jacobi
 update equation:  phi_new = phi_old - dt * F * |grad phi|
 
-Uses Godunov upwind scheme for |grad phi|. Includes SDF reinitialisation
-and velocity extension from surface to volume.
+Uses Godunov upwind scheme for |grad phi|, redistances after every step, and
+extends the surface velocity into the volume.
+
+The redistancing is not optional bookkeeping: hj_update's displacement is
+dt*V*|grad phi|, so a field that is not a distance function does not move.
 """
 from __future__ import annotations
 import warnings
@@ -854,4 +857,31 @@ def apply_adjoint_to_unified(
         if cap > 0:
             combined = np.clip(combined, -cap, cap)
     hj_update(phi, combined, cfl_limited_dt(combined, dt))
+    # REDISTANCE. Without this the Stage-2 adjoint loop does not move the car.
+    #
+    # hj_update steps `phi - dt*V*|grad phi|`, so the surface displacement is
+    # dt*V*|grad phi| -- and cfl_limited_dt's whole derivation assumes
+    # |grad phi| ~ 1 ("With phi a signed distance ... the surface displacement
+    # per step is dt*|V| metres"). build_unified_geometry does not produce a
+    # distance function: measured on a freshly built car, |grad phi| in the
+    # interface band has MEDIAN 0.000 and 87.5% of band cells sit below 0.1. So
+    # the update was multiplying the velocity by ~zero and the geometry stood
+    # still, whatever the adjoint said.
+    #
+    # That is what the live 2026-07-29 sweep actually showed: total mass
+    # identical to 0.75 mg across all ten candidates and all five d_halo values,
+    # while D20 wandered 3-7% -- remeshing noise on a shape that never changed.
+    # A/B over four steps at 1 mm, mass/COM term only:
+    #     without reinit  -0.008, -3.619, +0.000, -0.127 g   |grad phi| 0.000
+    #     with reinit     -8.915, -8.669, -3.119, -3.659 g   |grad phi| 1.000
+    # 6.5x the material removed, and monotone instead of stalling.
+    #
+    # Stage 1's evolution loop (bayesian_outer_search) has always redistanced,
+    # which is why the no-CFD path reaches the 48 g floor and this one never
+    # left 149 g. The module docstring claimed "Includes SDF reinitialisation"
+    # the whole time; only the other caller did.
+    #
+    # Cost is ~50 Godunov pseudo-steps over the grid, against a 15-minute CFD
+    # solve on the same iteration. Not worth a cadence.
+    reinitialise_sdf(phi)
     enforce_symmetry(geom)
