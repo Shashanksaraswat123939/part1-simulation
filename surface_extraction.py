@@ -704,7 +704,13 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
         min_angle_deg = None
 
     if min_angle_deg is not None and min_angle_deg < MESH_MIN_TRIANGLE_ANGLE_DEG:
-        best = None
+        # Seeded with the DO-NOTHING option, so the message cannot claim a
+        # repair "reached" a number worse than the mesh it started from.
+        # Measured on a car carved to 43.4 g: input 8.7 deg, and every repair
+        # candidate came back worse, the best of them 5.6 deg -- which the
+        # failure text then reported as what repair "reached", reading as if it
+        # had got closer to the 10 deg gate rather than further away.
+        best = ("no repair", min_angle_deg, None)
         for label, cand in _retry_triangle_quality(mesh):
             try:
                 got = float(np.degrees(trimesh.triangles.angles(cand.triangles).min()))
@@ -717,11 +723,15 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
                 mesh.faces = cand.faces
                 break
         else:
-            got = f"{best[1]:.1f}° via {best[0]}" if best else "no candidate produced"
+            if best[2] is None:
+                got = ("no repair improved on it -- every candidate came back "
+                       "worse than the unrepaired mesh")
+            else:
+                got = f"best repair reached {best[1]:.1f}° via {best[0]}"
             raise MeshQualityFailure(
                 f"{component}: Triangle quality below snappyHexMesh tolerance. "
                 f"Min angle {min_angle_deg:.1f}° < {MESH_MIN_TRIANGLE_ANGLE_DEG}°; "
-                f"best repair reached {got}."
+                f"{got}."
             )
 
     # ── Triangle aspect ratio check ──────────────────────────────────────
