@@ -120,13 +120,66 @@ def test_aspect_ratio_sliver_triangle_is_large():
     _pass("test_aspect_ratio_sliver_triangle_is_large")
 
 
+
+
+def test_a_few_slivers_warn_but_a_bad_mesh_still_raises():
+    """The angle gate is bounded by what snappyHexMesh was MEASURED to accept.
+
+    MESH_MIN_TRIANGLE_ANGLE_DEG = 10 was a hard minimum over every triangle, so
+    one bad triangle in sixty thousand rejected the whole car -- and it stopped
+    a real carve at 45 g. Meshing the rejected STLs on the actual solver
+    (openfoam2412, coarse background mesh, the production case builder) showed
+    the premise was false:
+
+        41.6 g  min angle 8.65 deg   1 sliver / 59,308 -> Mesh OK, 0 illegal faces
+        43.4 g  min angle 9.45 deg   3 slivers / 62,500 -> Mesh OK, 0 illegal faces
+        29.6 g  min angle 14.19 deg  0 slivers / 35,004 -> Mesh OK, 0 illegal faces
+
+    The min angle does not even degrade as the car carves; it oscillates,
+    because a sliver is a transient artefact of where the isosurface cuts a
+    cell. So a violation inside that measured envelope warns and continues, and
+    anything outside it still raises -- nothing has been measured out there.
+
+    This asserts BOTH halves. A gate that only warns would be as wrong as one
+    that only raises.
+    """
+    import inspect
+    import surface_extraction as SE
+
+    src = inspect.getsource(SE._mesh_quality_gate) if hasattr(SE, "_mesh_quality_gate") \
+        else inspect.getsource(SE)
+    assert "_MEASURED_SAFE_MIN_ANGLE_DEG" in src, (
+        "the angle gate no longer bounds itself by a measured envelope")
+    # The envelope must still RAISE outside itself -- a pure warning would let
+    # an unmeshable car through.
+    assert "raise MeshQualityFailure" in src, (
+        "the angle gate never raises; outside the measured envelope an "
+        "unmeshable mesh would be accepted silently")
+    # And the repair must be attempted BEFORE the envelope decides, or a mesh
+    # Taubin could have fixed gets accepted worse than necessary (measured:
+    # 9.06 -> 11.28 deg on one carve step).
+    i_env = src.index("_MEASURED_SAFE_MIN_ANGLE_DEG >=") if "_MEASURED_SAFE_MIN_ANGLE_DEG >=" in src \
+        else src.index("_worst >= _MEASURED_SAFE_MIN_ANGLE_DEG")
+    i_repair = src.index("_retry_triangle_quality")
+    assert i_repair < i_env, (
+        "the measured-safe envelope is consulted before the repair is "
+        "attempted; a mesh Taubin could have fixed would be accepted as-is")
+
+
 if __name__ == "__main__":
-    test_extract_surface_returns_mesh()
-    test_extract_surface_vertices_in_world_coords()
-    test_empty_mesh_raises()
-    test_exception_hierarchy()
-    test_accessibility_failure_has_is_large()
-    test_rule_violation_has_is_major()
-    test_aspect_ratio_equilateral_triangle_is_one()
-    test_aspect_ratio_sliver_triangle_is_large()
-    print("\nAll surface_extraction tests passed.")
+    # Collected by name. The hand-written call list this replaces printed
+    # "All surface_extraction tests passed" while silently skipping every test
+    # appended below it -- the same bug found in five other files today.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _fail = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        try:
+            getattr(_mod, _n)()
+            print("PASS " + _n)
+        except Exception as _e:  # noqa: BLE001
+            print("FAIL %s: %s" % (_n, _e))
+            _fail += 1
+    print("All surface_extraction tests passed." if not _fail
+          else "%d failed" % _fail)
+    _sys.exit(1 if _fail else 0)

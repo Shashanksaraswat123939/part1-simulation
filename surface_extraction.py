@@ -703,6 +703,38 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
         angles_rad = None
         min_angle_deg = None
 
+    # MEASURED ENVELOPE for the fall-through below. A handful of sliver
+    # triangles is not a mesh snappyHexMesh cannot handle -- that was an
+    # assumption, and it was wrong.
+    #
+    # This gate is a hard MINIMUM over every triangle, so one bad triangle out of
+    # sixty thousand rejected the whole car. Carving a real car down and meshing
+    # the rejected STLs on the actual solver (openfoam2412, coarse background
+    # mesh, the production case builder) measured:
+    #
+    #     41.6 g   min angle 8.65 deg   1 sliver / 59,308 tris -> Mesh OK, 0 illegal faces
+    #     43.4 g   min angle 9.45 deg   3 slivers / 62,500     -> Mesh OK, 0 illegal faces
+    #     29.6 g   min angle 14.19 deg  0 slivers / 35,004     -> Mesh OK, 0 illegal faces
+    #
+    # snappyHexMesh reported "Detected 0 illegal faces" on every one. Worse, the
+    # min angle does not degrade as the car carves -- it OSCILLATES, because a
+    # sliver is a transient artefact of where the isosurface happens to cut a
+    # cell. Down the same ladder it read 9.45, 8.65, 10.49, 9.84, 11.73, 15.05,
+    # 12.98, 13.70, 13.23, 14.19 deg while the geometry stayed watertight and
+    # single-body throughout. So the gate was halting the optimiser at a random
+    # iteration where one triangle happened to be thin, with a perfectly good
+    # geometry on either side of it, and costing ~15 g of carving headroom.
+    #
+    # The repair is still ATTEMPTED first -- Taubin genuinely improves these
+    # (9.06 -> 11.28 deg on one measured step), and skipping it to accept a
+    # worse mesh would be a regression. Only when every repair fails does the
+    # measured envelope decide between warn-and-continue and raise. Outside the
+    # envelope it still raises, because nothing has been measured out there: if
+    # you want to go lower, mesh a sample first and move these numbers with the
+    # evidence rather than assuming, as the 10 deg did.
+    _MEASURED_SAFE_MIN_ANGLE_DEG = 8.6
+    _MEASURED_SAFE_SLIVER_FRACTION = 1.0e-4          # 3/62,500 is 4.8e-5
+
     if min_angle_deg is not None and min_angle_deg < MESH_MIN_TRIANGLE_ANGLE_DEG:
         # Seeded with the DO-NOTHING option, so the message cannot claim a
         # repair "reached" a number worse than the mesh it started from.
@@ -728,11 +760,31 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
                        "worse than the unrepaired mesh")
             else:
                 got = f"best repair reached {best[1]:.1f}° via {best[0]}"
-            raise MeshQualityFailure(
-                f"{component}: Triangle quality below snappyHexMesh tolerance. "
-                f"Min angle {min_angle_deg:.1f}° < {MESH_MIN_TRIANGLE_ANGLE_DEG}°; "
-                f"{got}."
-            )
+            # Every repair failed. Inside the measured-safe envelope that is not
+            # a reason to throw the car away; outside it, it is.
+            _below = float((np.degrees(angles_rad)
+                            < MESH_MIN_TRIANGLE_ANGLE_DEG).mean())
+            _worst = max(min_angle_deg, best[1])
+            if (_worst >= _MEASURED_SAFE_MIN_ANGLE_DEG
+                    and _below <= _MEASURED_SAFE_SLIVER_FRACTION):
+                warnings.warn(
+                    f"{component}: min triangle angle {_worst:.2f}° is below "
+                    f"the {MESH_MIN_TRIANGLE_ANGLE_DEG}° gate and {got}, but "
+                    f"only {100.0 * _below:.4f}% of triangles are below it and "
+                    f"snappyHexMesh was measured to mesh this cleanly at "
+                    f"8.65° with this sliver density (0 illegal faces, Mesh "
+                    f"OK). Continuing.",
+                    RuntimeWarning, stacklevel=2)
+            else:
+                raise MeshQualityFailure(
+                    f"{component}: Triangle quality below snappyHexMesh "
+                    f"tolerance. Min angle {min_angle_deg:.1f}° < "
+                    f"{MESH_MIN_TRIANGLE_ANGLE_DEG}° across "
+                    f"{100.0 * _below:.4f}% of triangles; {got}. Outside the "
+                    f"measured-safe envelope (>= {_MEASURED_SAFE_MIN_ANGLE_DEG}° "
+                    f"and <= {100.0 * _MEASURED_SAFE_SLIVER_FRACTION:.4f}% "
+                    f"slivers), so this is not known to mesh."
+                )
 
     # ── Triangle aspect ratio check ──────────────────────────────────────
     try:
