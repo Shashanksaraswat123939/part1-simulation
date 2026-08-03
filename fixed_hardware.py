@@ -615,9 +615,29 @@ REAR_WING_MASS_KG: float = 0.005       # design placeholder, ~5g
 REAR_WING_OVERHANG_MM: float = 20.0    # T9.4.2: 0-40mm aft of Ref Plane B, midpoint
 REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 
-# Wheels + axles combined assembly -- mass is not given by the regs (a supplier
-# part); this is a design placeholder pending real measurement.
-WHEEL_AXLE_MASS_KG: float = 0.015      # design placeholder, ~15g for all 4 wheels+axles
+# Wheels + axles. MEASURED by the user 2026-08-03, both sides combined:
+#   front wheels + support systems   5 g
+#   rear  wheels + support systems   6 g
+# Split front/rear rather than lumped, because they differ AND they sit a whole
+# wheelbase apart: a single 11 g mass at the axle midpoint puts the wheel COM
+# (6/11 - 1/2)*W = 5.5 mm too far forward at W=120. That does not change the
+# optimisation (the COM terms are ~0.2% of the shape velocity, measured), but
+# check_stability ranks on com_x and the deliverable reports it.
+WHEEL_AXLE_FRONT_MASS_KG: float = 0.005    # measured, both front wheels + supports
+WHEEL_AXLE_REAR_MASS_KG: float = 0.006     # measured, both rear wheels + supports
+WHEEL_AXLE_MASS_KG: float = (
+    WHEEL_AXLE_FRONT_MASS_KG + WHEEL_AXLE_REAR_MASS_KG)   # 11 g, was a 15 g guess
+
+# Halo. MEASURED 2026-08-03 at 3 g.
+#
+# It had NO MASS AT ALL in the production rollup. ingest_mass_com's fixed
+# components are cartridge, rear wing and wheels/axles -- the halo is modelled
+# only as a void that forces phi > 0, so its geometry was respected and its
+# weight was not. Stage 1's proxy path does carry one
+# (bayesian_outer_search.STUB_HALO_MASS_KG = 8 g), so the two stages disagreed:
+# Stage 1 ranked (W, x_front) with an 8 g halo and Stage 2 computed race times
+# with none.
+HALO_MASS_KG: float = 0.003
 
 # Halo cross-section (U1): the real halo is a downloadable fixed CAD part
 # (T4.4.1) with a curved bar profile, not a constant extruded cross-section.
@@ -638,6 +658,30 @@ def default_halo_cross_section_yz_m() -> list[tuple[float, float]]:
     z0 = HALO_MIN_Z_M
     z1 = mm_to_m(HALO_CROSS_SECTION_TOP_MM)
     return [(-hw, z0), (hw, z0), (hw, z1), (-hw, z1)]
+
+
+def default_mass_com_positions(W_mm: float, x_front_mm: float,
+                               rear_face_x_m: float,
+                               halo_x_front_m: float, halo_x_rear_m: float,
+                               halo_z_mid_m: float) -> dict:
+    """COM positions for the MASS ROLLUP, in metres.
+
+    Separate from compute_default_fixed_hardware_inputs because that dict is
+    splatted into place_fixed_hardware, which builds void masks and takes no
+    COMs -- adding keys there is a TypeError.
+
+    Front and rear wheels are separate entries: they differ in mass (5 g vs
+    6 g, measured 2026-08-03) and sit a whole wheelbase apart, so lumping them
+    at the axle midpoint puts the wheel COM (6/11 - 1/2)*W = 5.5 mm too far
+    forward at W=120.
+    """
+    from geometry_contract import mm_to_m as _mm
+    xf = _mm(x_front_mm)
+    return {
+        "wheels_front_com": (xf, 0.0, R_WHEEL_M),
+        "wheels_rear_com": (xf + _mm(W_mm), 0.0, R_WHEEL_M),
+        "halo_com": (0.5 * (halo_x_front_m + halo_x_rear_m), 0.0, halo_z_mid_m),
+    }
 
 
 def compute_default_fixed_hardware_inputs(
@@ -682,11 +726,27 @@ def compute_default_fixed_hardware_inputs(
     canister_x_m = rear_face_x_m - mm_to_m(CANISTER_DEPTH_MM / 2.0)
     canister_com_mm = (canister_x_m * 1000.0, 0.0, CANISTER_Z_MM)
 
-    # Wheels+axles: COM at the midpoint between front and rear axle (equal
-    # front/rear contribution assumed), on centreline, at wheel-radius height.
+    # Wheels+axles: front and rear are separate masses at their own axles.
+    # The old single COM at the axle midpoint assumed equal front/rear mass;
+    # measured they are 5 g and 6 g, so the true combined COM sits at
+    # x_front + (6/11)*W, 5.5 mm aft of the midpoint at W=120.
     x_front_m = mm_to_m(x_front_mm)
     W_m = mm_to_m(W_mm)
-    wheel_axle_com_mm = ((x_front_m + W_m / 2.0) * 1000.0, 0.0, R_WHEEL_M * 1000.0)
+    wheel_front_com_mm = (x_front_m * 1000.0, 0.0, R_WHEEL_M * 1000.0)
+    wheel_rear_com_mm = ((x_front_m + W_m) * 1000.0, 0.0, R_WHEEL_M * 1000.0)
+    # Kept for callers that still want the lumped value; now mass-weighted
+    # rather than geometric.
+    _wf, _wr = WHEEL_AXLE_FRONT_MASS_KG, WHEEL_AXLE_REAR_MASS_KG
+    wheel_axle_com_mm = (
+        (_wf * wheel_front_com_mm[0] + _wr * wheel_rear_com_mm[0]) / (_wf + _wr),
+        0.0, R_WHEEL_M * 1000.0)
+
+    # Halo COM: centre of the pocket it occupies in x, on centreline, at the
+    # mid-height of its own cross-section.
+    _hz = [z for _y, z in halo_geometry.cross_section_yz_m]
+    halo_com_mm = ((0.5 * (halo_geometry.x_front_m + halo_geometry.x_rear_m)) * 1000.0,
+                   0.0,
+                   (0.5 * (min(_hz) + max(_hz))) * 1000.0)
 
     # Rear wing: aft of Ref Plane B by REAR_WING_OVERHANG_MM, on centreline.
     rear_wing_x_m = ref_plane_B_m + mm_to_m(REAR_WING_OVERHANG_MM)

@@ -86,8 +86,13 @@ WHEEL_X_HALF_WIDTH_M: float = WHEEL_X_CLEARANCE_HALF_WIDTH_M
 AXLE_Z_M: float = R_WHEEL_M            # wheel centre at 15 mm
 
 # Fixed hardware mass stubs (g/kg). Replace with real measurements.
-STUB_WHEEL_AXLE_MASS_KG: float = 0.015   # ~15 g for 4 wheels + axles
-STUB_HALO_MASS_KG:       float = 0.008   # ~8 g
+# MEASURED 2026-08-03 (both sides combined), replacing guesses of 15 g and 8 g.
+# Stage 1 and Stage 2 must agree about the mass of the same car; they did not.
+STUB_WHEEL_FRONT_MASS_KG: float = 0.005  # front wheels + support systems
+STUB_WHEEL_REAR_MASS_KG:  float = 0.006  # rear wheels + support systems
+STUB_WHEEL_AXLE_MASS_KG: float = (
+    STUB_WHEEL_FRONT_MASS_KG + STUB_WHEEL_REAR_MASS_KG)   # 11 g, was 15 g
+STUB_HALO_MASS_KG:       float = 0.003   # measured, was an 8 g guess
 STUB_REAR_WING_MASS_KG:  float = 0.005   # ~5 g
 
 # Distance below which we warm-start from a previous result (normalised space).
@@ -399,16 +404,46 @@ def _unified_mass_com_state(geom) -> Optional[dict]:
     solid, so the caller stops rather than descend against a garbage state.
     """
     from unified_phi import compute_mass_com
+    from geometry_contract import R_WHEEL_M, mm_to_m
     components = compute_mass_com(geom)
     machined = sum(c.mass_kg for c in components)
     if machined <= 0:
         return None
-    total = machined + (
-        CO2_MASS_KG + STUB_WHEEL_AXLE_MASS_KG
-        + STUB_HALO_MASS_KG + STUB_REAR_WING_MASS_KG
+
+    # FIXED HARDWARE AT ITS OWN POSITIONS, RECOMPUTED PER DESIGN.
+    #
+    # This used to add the fixed masses to the TOTAL and compute com_x and
+    # com_z from the machined components ALONE -- so 42 g of cartridge, wheels,
+    # halo and wing (about 29% of a 149 g car) counted for weight and sat
+    # nowhere. The wheels are the part that moves when the wheelbase changes,
+    # so Stage 1 was ranking wheelbases on a COM that could not see them: W was
+    # a free variable whose main COM effect was invisible to the thing choosing
+    # it.
+    #
+    # geom carries W_mm and x_front_mm, so the positions are derived per design
+    # rather than fixed. Front and rear wheels are separate because they differ
+    # (5 g and 6 g measured 2026-08-03) and sit a wheelbase apart.
+    xf = mm_to_m(geom.x_front_mm)
+    x_rear_axle = xf + mm_to_m(geom.W_mm)
+    try:
+        rear_face = geom.bv.rearpod.x_max_m()
+    except Exception:  # noqa: BLE001 -- fall back to the envelope's rear
+        rear_face = x_rear_axle
+    halo_x = geom.landmarks.get("halo_x_mid_m")
+    if halo_x is None:
+        halo_x = 0.5 * (xf + rear_face)
+    fixed = (
+        (CO2_MASS_KG, rear_face - 0.0225, 0.035),
+        (STUB_WHEEL_FRONT_MASS_KG, xf, R_WHEEL_M),
+        (STUB_WHEEL_REAR_MASS_KG, x_rear_axle, R_WHEEL_M),
+        (STUB_HALO_MASS_KG, halo_x, 0.030),
+        (STUB_REAR_WING_MASS_KG, rear_face + 0.020, 0.050),
     )
-    com_x = sum(c.mass_kg * c.com_x_m for c in components) / machined
-    com_z = sum(c.mass_kg * c.com_z_m for c in components) / machined
+    total = machined + sum(m for m, _x, _z in fixed)
+    com_x = (sum(c.mass_kg * c.com_x_m for c in components)
+             + sum(m * x for m, x, _z in fixed)) / total
+    com_z = (sum(c.mass_kg * c.com_z_m for c in components)
+             + sum(m * z for m, _x, z in fixed)) / total
     return {"total_mass_kg": total, "com_x_m": com_x, "com_z_m": max(com_z, 1e-4)}
 
 
