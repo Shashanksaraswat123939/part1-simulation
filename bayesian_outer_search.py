@@ -288,8 +288,10 @@ def _make_cylinders(x_front_mm: float, W_mm: float):
 # The first three terms are the original proxy. The barrier is new (2026-07-20)
 # and is what makes the proxy OPTIMISABLE rather than degenerate: without it the
 # mass term is unbounded below, so a level set driven by these gradients carves
-# the car away to nothing. T3.6 sets a 48 g floor on the whole car, so the
-# barrier encodes a real regulation rather than an arbitrary stopping point.
+# the car away to nothing. T3.6 sets a 48 g floor EXCLUDING the CO2
+# cartridge, so the barrier encodes a real regulation rather than an
+# arbitrary stopping point -- see competition_mass_kg for why the
+# distinction is worth 23 g.
 #
 # Still a proxy: it knows nothing about aerodynamics. Use it to check that the
 # search MOVES SENSIBLY, not to pick a design.
@@ -298,16 +300,40 @@ PROXY_HCOM_REF_M: float = 0.025
 PROXY_W_MASS: float = 0.5
 PROXY_W_HCOM: float = 0.3
 PROXY_W_WHEELBASE: float = 0.2
-PROXY_MIN_MASS_KG: float = 0.048        # T3.6
+PROXY_MIN_MASS_KG: float = 0.048        # T3.6, EXCLUDING the CO2 cartridge
+
+
+def competition_mass_kg(total_mass_kg: float) -> float:
+    """The mass T3.6's 48 g floor is measured on: everything EXCEPT the CO2
+    cartridge.
+
+    The barrier used to be compared against the FULL mass, cartridge included.
+    That is 23 g of slack: with the fixed hardware at 42 g (23 cartridge + 5
+    wing + 5 front wheels + 6 rear wheels + 3 halo), `machined + 42 >= 48`
+    lets the machined body fall to 6 g, where the rule actually requires
+    `machined + 19 >= 48`, i.e. 29 g. The barrier was licensing a car 23 g
+    under the legal minimum.
+
+    NOT a change to the race-time calculator, which is right as it stands:
+    car_weight_kg there is everything PERMANENTLY on the car including the
+    empty cartridge shell, plus the unspent propellant race_objective adds over
+    time. Physics accelerates the real mass; the regulation just measures a
+    different subset of it. The two numbers are supposed to differ.
+    """
+    return total_mass_kg - CO2_MASS_KG
 PROXY_MASS_BARRIER_WEIGHT: float = 100.0
 PROXY_HJ_DT: float = 2.0e-5
 
 
 def _proxy_mass_barrier(total_mass_kg: float) -> float:
-    """Steep one-sided penalty below T3.6's 48 g minimum."""
-    if total_mass_kg >= PROXY_MIN_MASS_KG:
+    """Steep one-sided penalty below T3.6's 48 g minimum.
+
+    Measured on the COMPETITION mass (cartridge excluded), not the full mass.
+    """
+    m = competition_mass_kg(total_mass_kg)
+    if m >= PROXY_MIN_MASS_KG:
         return 0.0
-    deficit = (PROXY_MIN_MASS_KG - total_mass_kg) / PROXY_MIN_MASS_KG
+    deficit = (PROXY_MIN_MASS_KG - m) / PROXY_MIN_MASS_KG
     return PROXY_MASS_BARRIER_WEIGHT * deficit ** 2
 
 
@@ -323,10 +349,11 @@ def _proxy_objective_gradients(total_mass_kg: float) -> dict[str, float]:
     outward. Equilibrium lands just under 48 g at the default weight.
     """
     dT_dmass = PROXY_W_MASS / PROXY_MASS_REF_KG
-    if total_mass_kg < PROXY_MIN_MASS_KG:
+    _m = competition_mass_kg(total_mass_kg)
+    if _m < PROXY_MIN_MASS_KG:
         dT_dmass -= (
             2.0 * PROXY_MASS_BARRIER_WEIGHT
-            * (PROXY_MIN_MASS_KG - total_mass_kg) / PROXY_MIN_MASS_KG ** 2
+            * (PROXY_MIN_MASS_KG - _m) / PROXY_MIN_MASS_KG ** 2
         )
     return {
         "dT_dmass": dT_dmass,
@@ -454,10 +481,11 @@ def _mass_barrier_gradient(total_mass_kg: float) -> float:
     than carving the car to nothing. Once pinned there, the drag term becomes
     the differentiator -- which is the real F1-in-Schools regime: build to the
     minimum legal weight, then let aerodynamics win."""
-    if total_mass_kg >= PROXY_MIN_MASS_KG:
+    _m = competition_mass_kg(total_mass_kg)
+    if _m >= PROXY_MIN_MASS_KG:
         return 0.0
     return -(2.0 * PROXY_MASS_BARRIER_WEIGHT
-             * (PROXY_MIN_MASS_KG - total_mass_kg) / PROXY_MIN_MASS_KG ** 2)
+             * (PROXY_MIN_MASS_KG - _m) / PROXY_MIN_MASS_KG ** 2)
 
 
 def _level2_evaluate_unified(
