@@ -155,9 +155,36 @@ def reinitialise_sdf(phi: PhiGrid, n_steps: int = 50, dt_reinit: float = None) -
     # Work entirely in float64
     grid_f64 = phi.grid.astype(np.float64)
 
+    # SMOOTHED sign, not np.sign. This is what stops redistancing from eating
+    # the car.
+    #
+    # np.sign is discontinuous at the interface, so the cells that straddle
+    # phi=0 -- exactly the ones that define where the surface IS -- get driven
+    # by a full-magnitude +1 or -1 depending on which side of zero they land.
+    # The zero level set drifts, and it drifts inward. Measured before this
+    # change, at 1 mm spacing on a real car:
+    #     reinit on the as-built field      -8.43 g
+    #     reinit AGAIN on the result        -8.35 g   <- not converging
+    #     reinit on a post-hj field         -2.38 g
+    # A correct redistancing is idempotent: applied to a field that is already
+    # a distance function it should change nothing. This one removed another
+    # 8.35 g every time it was called.
+    #
+    # It mattered enormously, because apply_adjoint_to_unified redistances every
+    # iteration. Of one full production step's mass loss, the redistancing
+    # accounted for 68% at 1 mm and 90% at 2 mm -- so most of what looked like
+    # the optimiser carving the car was numerical dissipation, and the T3.6 mass
+    # barrier could never hold the floor because erosion outran its restoring
+    # force (it settled 7.4 g under, at 40.5 g against an equilibrium of 47.9).
+    #
+    # phi / sqrt(phi^2 + dx^2) is the standard smoothing (Peng et al. 1999): it
+    # tends to +/-1 away from the interface, where the sign is unambiguous, and
+    # to 0 AT the interface, where it should not push at all. |grad phi| -> 1
+    # just as before; the surface simply stops moving while it happens.
+    eps = GRID_SPACING_M
     for _ in range(n_steps):
         grad_mag = _grad_magnitude(grid_f64)
-        sign_phi = np.sign(grid_f64)
+        sign_phi = grid_f64 / np.sqrt(grid_f64 * grid_f64 + eps * eps)
         grid_f64 = grid_f64 - dt_reinit * sign_phi * (grad_mag - 1.0)
 
         # Clamp to prevent runaway in cells far from the zero level set.
