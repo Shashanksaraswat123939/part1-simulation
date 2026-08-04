@@ -524,6 +524,19 @@ def build_unified_geometry(
             W_mm=W_mm, x_front_mm=x_front_mm, **hw_inputs
         )
         hard_air |= fixed_hardware.combined_void_mask
+        # T4.4.2 / T4.4.3: the halo must be visible in the front, side and top
+        # views. Modelled as hard AIR over the halo's shadow in each view
+        # direction, so the optimiser cannot fill it at any point in the
+        # descent -- a rule that binds every candidate rather than one audited
+        # after the fact. Measured before this existed, on a carved 79 g car:
+        # 100% of halo cells obstructed in top view, 100% in front, 64.7% in
+        # side. The rule was comprehensively violated and nothing forbade it.
+        from fixed_hardware import halo_visibility_air_mask
+        hard_air |= halo_visibility_air_mask(
+            fixed_hardware.halo_void_mask,
+            z_origin_m=region.origin_m[2],
+            dz_m=GRID_SPACING_M,
+        )
     except ImportError:
         # Part 2 supplies FixedHardwareSpec. Without it there are no hardware
         # voids -- loud in the returned object (fixed_hardware is None), not

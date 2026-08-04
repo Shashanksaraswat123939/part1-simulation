@@ -652,6 +652,96 @@ HALO_CROSS_SECTION_HALF_WIDTH_MM: float = 12.5   # matches halo_pocket.py's 25mm
 HALO_CROSS_SECTION_TOP_MM: float = 45.0          # conservative; real arch height TBD
 
 
+
+# T4.4.2 allows the bottom of the halo to be obstructed in the front and side
+# views -- the rule diagram boxes the halo ABOVE its base fillet and dimensions
+# that fillet at 4.0 mm. Only material blocking the halo above this height
+# violates the front/side rule. T4.4.3 (top view) has no such relief: the whole
+# plan outline must be visible, obstructed only by the helmet, which this model
+# does not carry.
+HALO_VISIBILITY_FILLET_MM: float = 4.0
+
+
+def halo_visibility_air_mask(halo_mask: "np.ndarray",
+                             z_origin_m: float,
+                             dz_m: float) -> "np.ndarray":
+    """Cells that must be AIR for T4.4.2 and T4.4.3 halo visibility.
+
+    T4.4.2 (front and side, 10 pts): "Visibility of the Halo must not be
+    physically obstructed by any other component when viewed in the front or
+    side views" -- and the rule's own diagram boxes only the halo ABOVE a 4.0 mm
+    base fillet, so bodywork may blend into the bottom 4 mm.
+
+    T4.4.3 (top, 10 pts): "The Halo must not be physically obstructed in the
+    plan view except by the helmet." No fillet relief; the full plan outline
+    must be clear.
+
+    The halo was modelled only as a VOID -- phi > 0 so the optimiser cannot fill
+    the mount -- with nothing stopping bodywork sitting above, ahead of or
+    outboard of it. Measured on a carved 79 g car before this existed: 100% of
+    halo cells obstructed in top view, 100% in front, 64.7% in side.
+
+    "Unobstructed from view V" means every ray from a protected halo cell toward
+    V's viewer is clear of solid, so the constraint is that the protected halo's
+    SHADOW in each direction must be air:
+
+        top    viewer at +z    -> air ABOVE it,     full halo (T4.4.3)
+        front  viewer at -x    -> air AHEAD of it,  above the fillet (T4.4.2)
+        side   viewer at +/-y  -> air OUTBOARD,     above the fillet (T4.4.2)
+
+    Returned as a mask to OR into hard_mask_air, so the constraint binds at
+    every step of the descent rather than being audited afterwards.
+
+    z_origin_m / dz_m locate the grid in space, since the fillet is a physical
+    4 mm rather than a cell count.
+    """
+    import numpy as _np
+    out = _np.zeros_like(halo_mask, dtype=bool)
+    if not halo_mask.any():
+        return out
+
+    nx, ny, nz = halo_mask.shape
+
+    # ---- TOP (T4.4.3): full halo, air everywhere above, per (x, y) column ----
+    # cumsum along +z: at index k the running total counts halo cells at z <= k,
+    # so >0 means "there is halo at or below me", i.e. I am above the halo and
+    # would block the top view.
+    #
+    # The first version flipped before the cumsum, which computes "there is halo
+    # at or ABOVE me" -- the exact opposite -- and left the top view 100%
+    # obstructed while front and side both cleared.
+    above = _np.cumsum(halo_mask, axis=2) > 0
+    out |= above & ~halo_mask
+
+    # ---- the protected sub-region for T4.4.2 -------------------------------
+    k_halo = _np.flatnonzero(halo_mask.any(axis=(0, 1)))
+    z_bottom_m = z_origin_m + k_halo[0] * dz_m
+    z_cut_m = z_bottom_m + HALO_VISIBILITY_FILLET_MM / 1000.0
+    k_cut = int(_np.ceil((z_cut_m - z_origin_m) / dz_m))
+    protected = halo_mask.copy()
+    protected[:, :, :k_cut] = False           # bottom fillet band is exempt
+    if not protected.any():
+        return out & ~halo_mask
+
+    # ---- FRONT (T4.4.2): air ahead of the protected halo, per (y, z) --------
+    # Ahead = smaller x than the first protected halo cell in that (y, z) row.
+    first_x = _np.argmax(protected, axis=0)                    # (y, z)
+    has = protected.any(axis=0)                                # (y, z)
+    xs = _np.arange(nx)[:, None, None]
+    out |= (xs < first_x[None, :, :]) & has[None, :, :]
+
+    # ---- SIDE (T4.4.2): air outboard of it on both flanks, per (x, z) ------
+    # Outboard = beyond the extreme protected halo cell in y, either direction.
+    ys = _np.arange(ny)[None, :, None]
+    any_y = protected.any(axis=1)                              # (x, z)
+    first_y = _np.argmax(protected, axis=1)                    # (x, z)
+    last_y = ny - 1 - _np.argmax(_np.flip(protected, axis=1), axis=1)
+    out |= (ys < first_y[:, None, :]) & any_y[:, None, :]
+    out |= (ys > last_y[:, None, :]) & any_y[:, None, :]
+
+    return out & ~halo_mask
+
+
 def default_halo_cross_section_yz_m() -> list[tuple[float, float]]:
     """Conservative rectangular halo cross-section, see U1 note above."""
     hw = mm_to_m(HALO_CROSS_SECTION_HALF_WIDTH_MM)
