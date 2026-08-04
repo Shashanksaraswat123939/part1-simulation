@@ -43,7 +43,23 @@ from virtual_cargo import cargo_mass_com, find_cargo_placement, CARGO_Z_BASE_M
 from geometry_contract import mm_to_m, D_HALO_REF_A_OFFSET_MM
 
 NOMINAL_D_HALO_MM: float = 20.0          # held fixed in Stage 1; Stage 2 sweeps it
-EVOLVE_ITERS: int = 30                    # carve toward the 48 g floor before ranking
+# 100, not 30. Stage 1 runs at 2 mm with NO CFD, so its iterations cost
+# milliseconds and every gram it removes is a gram Stage 2 does not remove at
+# ~50 minutes per CFD iteration. Measured 2026-08-04, machined mass handed over
+# and what it leaves for the expensive stage:
+#     EVOLVE  stage1   machined   left for CFD   CFD iters   h per d_halo
+#         30    1.7 s    54.48 g       25.48 g          51         42.5
+#         60    3.3 s    30.09 g        1.09 g           2          1.8
+#        100    5.4 s    29.03 g        0.03 g           0          ~0
+#        150    8.3 s    28.93 g        0.00 g           0          ~0
+# So 3.7 extra seconds here removes roughly nine days of CFD across the sweep,
+# and 100/150/220 all land at the same 28.9-29.0 g because the T3.6 barrier
+# holds the floor once redistancing stopped eroding the body.
+#
+# It also changes what Stage 2 IS: with mass already at the floor, the CFD loop
+# refines aerodynamics at roughly constant mass instead of re-walking a
+# mass-driven descent in which aero is a few percent of every step.
+EVOLVE_ITERS: int = 100
 FAILURE_T: float = 1.0e6
 
 # A cargo scorer maps (total_mass_kg, com_x_m, com_z_m) -> race time (lower is
