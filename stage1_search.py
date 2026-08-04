@@ -102,6 +102,25 @@ class Stage1Point:
     # flip, and every consumer would have to re-derive z_base (z_floor + 1 mm)
     # itself -- which is exactly how the two drift apart.
     cargo_z_base_m: float = 0.0
+    # Path to the CARVED phi field this evaluation produced, or "" .
+    #
+    # Stage 1 carves every candidate EVOLVE_ITERS (30) steps toward the T3.6
+    # floor to rank it -- measured, that reaches the floor at 2 mm in 28 -- and
+    # then threw the shape away, handing Stage 2 three scalars. Stage 2 then
+    # rebuilt from the 150 g envelope and re-carved the SAME descent using CFD
+    # at roughly 55 minutes an iteration.
+    #
+    # With redistancing no longer eroding the body, that descent is ~150
+    # iterations at production spacing, about six days per d_halo. Stage 1 does
+    # it in 28 iterations with no CFD at all, because the descent is
+    # mass-driven and the aero term is a few percent of it. Keeping the field
+    # turns the expensive half of the run into a refinement.
+    phi_snapshot_path: str = ""
+    # Spacing the snapshot was carved at, in metres. Stage 2 runs finer, and
+    # remap_geometry needs the SOURCE spacing as well as the target --
+    # GRID_SPACING_M is a module global that coarse.use_spacing rewrites, so by
+    # the time Stage 2 remaps, the global no longer describes this field.
+    phi_spacing_m: float = 0.0
 
     @property
     def unit(self) -> tuple[float, float]:
@@ -138,6 +157,12 @@ class Stage1Result:
                 "z_base_m": b.cargo_z_base_m,
                 "flip": b.cargo_flip,
             },
+            # The carved field, so Stage 2 starts from a car already at the mass
+            # floor instead of re-descending from the envelope with CFD. Empty
+            # if the save failed, in which case Stage 2 rebuilds as before.
+            "phi_snapshot_path": b.phi_snapshot_path,
+            "phi_spacing_m": b.phi_spacing_m,
+            "phi_mass_kg": b.mass_kg,
         }
 
 
@@ -235,18 +260,39 @@ def evaluate_scalars(
         return _fail(W_mm, x_front_mm, d_halo_mm)
 
     # ── Step 2: evolve WITH that cargo, rank by the mass/COM proxy ────────────
-    r = _level2_evaluate_unified(
+    r, carved_geom = _level2_evaluate_unified(
         W_mm, x_front_mm, d_halo_mm, EVOLVE_ITERS, out_dir, eval_id,
+        return_geom=True,
         cargo_placement=placement,
     )
     if r.race_time >= 1e5:
         return _fail(W_mm, x_front_mm, d_halo_mm)
+
+    # Persist the carved field. It is the expensive product of this evaluation
+    # -- 30 descent steps to the T3.6 floor -- and it was discarded, so Stage 2
+    # rebuilt the same descent from the 150 g envelope using CFD.
+    snap = ""
+    if carved_geom is not None:
+        try:
+            snap = carved_geom.phi.save(f"stage1_W{W_mm:g}_xf{x_front_mm:g}",
+                                        out_dir)
+        except Exception as exc:  # noqa: BLE001 -- ranking must not depend on it
+            import warnings
+            warnings.warn(
+                f"could not save the Stage-1 carved field for W={W_mm} "
+                f"x_front={x_front_mm} ({exc}); Stage 2 will rebuild from the "
+                f"envelope and re-carve, which is what this avoids.",
+                RuntimeWarning, stacklevel=2)
+
     return Stage1Point(
         W_mm=W_mm, x_front_mm=x_front_mm, d_halo_mm=d_halo_mm,
         T_proxy=r.race_time, mass_kg=r.mass_kg,
         com_x_m=r.x_com_m, com_z_m=r.h_com_m,
         cargo_x_start_m=placement["x_start_m"], cargo_flip=placement["flip"],
         cargo_z_base_m=placement.get("z_base_m", z_base_m),
+        phi_snapshot_path=snap,
+        phi_spacing_m=(0.0 if carved_geom is None
+                       else getattr(carved_geom, "spacing_m", 0.0)),
     )
 
 
