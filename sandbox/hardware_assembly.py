@@ -30,6 +30,7 @@ decimated before assembly. The body is generated at coarse spacing. Pass
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,19 @@ def _complete_half(mesh, tol_mm: float = 1.0):
 
 
 def _decimate(mesh, target_faces: int):
+    """Reduce face count for assembly/render.
+
+    NOT the source of the streaks on the canister and halo in assembly renders.
+    Those are sliver triangles in the SUPPLIED CAD, present before any
+    processing here: measured per-face on the shipped files, co2_canister has
+    169 triangles with an edge over 10 mm (longest 59.8 mm, median edge
+    0.339 mm) and halo_helmet has 332 (longest 38.4 mm, median 0.177 mm). Only
+    26% of the halo's and none of the canister's lie on the y=0 section plane,
+    so they are not just the half-mesh cap either. front_wheel by contrast has
+    none. Decimation neither creates nor worsens them, and a guard against it
+    was removed once measured. Cosmetic only: hardware reaches the solver as
+    void masks, never as surfaces.
+    """
     if len(mesh.faces) <= target_faces:
         return mesh
     try:
@@ -195,46 +209,55 @@ def place_halo(hw_inputs) -> dict:
     return {"halo_helmet": m}
 
 
-def _body_rear_x_at_z(body, z_m: float, band_m: float = 0.004) -> float:
-    """Max body x within a thin z-band around z_m, on the centreline.
+def place_canister(hw_inputs, bv, fh=None, body=None) -> dict:
+    """Real CO2 canister seated in its own bore, protruding out the rear.
 
-    Anchors the canister to where the body ACTUALLY ends at cartridge height,
-    not to the envelope rear. The two diverge once the body tapers its tail
-    early -- anchoring to the envelope leaves the canister floating in space
-    past the real bodywork.
-    """
-    if body is None:
-        return None
-    v = body.vertices
-    near = (np.abs(v[:, 2] - z_m) <= band_m) & (np.abs(v[:, 1]) <= 0.010)
-    return float(v[near, 0].max()) if near.any() else float(v[:, 0].max())
+    ANCHORED TO THE BORE, not to a body-surface probe. This used to call
+    _body_rear_x_at_z(body, 35 mm): "max body x in a thin z-band about
+    cartridge height, on the centreline", meant to follow a tail that tapers
+    early instead of floating past it. But at cartridge height ON THE
+    CENTRELINE the body is hollow BY DESIGN -- that hollow is the bore. So the
+    probe returned the bore's leading edge, not the tail. Measured on the
+    2026-08-05 carved car: it read 156.7 mm against a true rear of 207.2 mm,
+    50.5 mm short, and seated the cartridge through solid bodywork with the
+    actual bore left empty.
 
-
-def place_canister(hw_inputs, bv, body=None) -> dict:
-    """Real CO2 canister on the centreline at z=35, protruding out the rear.
-
-    The part is a half mesh (completed to a whole) whose axis lies along x. We
-    put it on the centreline at CANISTER_Z_MM and slide it in x so its rear end
-    pokes ~8 mm past the body's ACTUAL rear at cartridge height (T5.6 needs
-    >=5 mm protrusion). Falls back to the envelope rear if no body is given.
+    fh.canister_cylinder is the bore as geometry, so use it: push the cartridge
+    in until it bottoms out on the front of the bore, exactly as it is loaded
+    in reality. Protrusion past the rear face then follows from the part's own
+    length rather than being dialled in, and T5.6's >=5 mm is checked, not
+    assumed. Falls back to the old envelope anchor only if no fh is supplied.
     """
     from fixed_hardware import CANISTER_Z_MM
 
     can = _complete_half(_load("co2_canister.stl"))
     lo, hi = can.bounds
     z_axis_m = CANISTER_Z_MM / 1000.0
-    rear_m = _body_rear_x_at_z(body, z_axis_m)
-    if rear_m is None:
-        rear_m = bv.rearpod.x_max_m()
-    protrusion_m = 0.008
-    dx = (rear_m + protrusion_m) - hi[0]      # rear end -> body rear + protrusion
+
+    cyl = getattr(fh, "canister_cylinder", None) if fh is not None else None
+    if cyl is not None:
+        bore_front_m = cyl.x_center_m - cyl.x_half_width_m
+        z_axis_m = cyl.z_center_m
+        dx = bore_front_m - lo[0]              # seat it against the bore end
+    else:
+        dx = (bv.rearpod.x_max_m() + 0.008) - hi[0]
+
     m = can.copy()
     m.apply_translation([dx, -(lo[1] + hi[1]) / 2.0, z_axis_m - (lo[2] + hi[2]) / 2.0])
+
+    if body is not None:
+        protrusion_mm = (m.bounds[1][0] - float(body.vertices[:, 0].max())) * 1000.0
+        if protrusion_mm < 5.0:
+            warnings.warn(
+                f"CO2 cartridge protrudes {protrusion_mm:.1f} mm past the body "
+                f"rear; T5.6 requires at least 5 mm.", RuntimeWarning,
+                stacklevel=2)
     return {"co2_canister": m}
 
 
 def build_hardware(W_mm: float, x_front_mm: float, d_halo_mm: float, bv,
-                   decimate_to: int | None = 12000, body=None) -> dict:
+                   decimate_to: int | None = 12000, body=None,
+                   fh=None) -> dict:
     """All real hardware parts placed in project coordinates, keyed by name.
 
     `body` (the extracted body mesh) lets the canister anchor to the body's
@@ -246,12 +269,21 @@ def build_hardware(W_mm: float, x_front_mm: float, d_halo_mm: float, bv,
         W_mm, x_front_mm, d_halo_mm, bv.ref_plane_A_m, bv.ref_plane_B_m,
         rear_face_x_m=bv.rearpod.x_max_m(),
     )
+    # fh carries canister_cylinder -- the bore as geometry. place_canister
+    # seats the cartridge against it instead of probing the body surface at
+    # cartridge height, where the body is hollow by design.
+    if fh is None:
+        try:
+            from fixed_hardware import place_fixed_hardware
+            fh = place_fixed_hardware(**hw_inputs)
+        except Exception:
+            fh = None
 
     parts: dict = {}
     parts.update(place_wheels(W_mm, x_front_mm, hw_inputs))
     parts.update(place_supports(W_mm, x_front_mm))
     parts.update(place_halo(hw_inputs))
-    parts.update(place_canister(hw_inputs, bv, body=body))
+    parts.update(place_canister(hw_inputs, bv, fh=fh, body=body))
 
     if decimate_to:
         parts = {k: _decimate(v, decimate_to) for k, v in parts.items()}
