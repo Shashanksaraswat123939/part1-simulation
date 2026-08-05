@@ -194,24 +194,116 @@ def test_com_sanity_gate_outside_car_length():
     except ValueError:
         _pass("test_com_sanity_gate_outside_car_length")
 
+
+
+def test_the_canister_void_is_the_bore_and_stays_legal():
+    """The chamber is regulated; the wall around it is not part of the hole.
+
+    hardware_cad/co2_canister.stl "already includes the minimum SAFETY ZONE
+    around the cartridge" (hardware_geometry.canister_front_x_mm) and measures
+    12.00 mm about the bore axis, so a solid-body intersection test against
+    that mesh reports overlap wherever the wall is. I read that as the void
+    being too small and widened it to 12.125 mm -- which makes the CHAMBER
+    24.25 mm across, against T5.1's 18.0-18.5 mm. Illegal, and caught by
+    test_cartridge_bore_is_carved_and_open_at_the_rear.
+
+    The annulus between the bore and the assembly's outer face is meant to be
+    SOLID: it is T5.5's 3 mm wall. Body material there is correct. (The
+    vertices that looked like an intersection sat at radius 9.05-11.91 mm,
+    i.e. almost entirely outside the 9.125 mm bore -- they were the wall.)
+
+    So: void = bore, and the wider radius exists only to anchor the loft.
+    """
+    from fixed_hardware import (CANISTER_CLEARANCE_RADIUS_MM,
+                                CANISTER_DIAMETER_MM, CANISTER_SAFETY_ZONE_MM,
+                                compute_default_fixed_hardware_inputs)
+
+    inputs = compute_default_fixed_hardware_inputs(
+        130.0, 46.0, 20.0, 0.030, 0.176, rear_face_x_m=0.213)
+    bore_dia = inputs["canister_radius_mm"] * 2.0
+    assert 18.0 <= bore_dia <= 18.5, (
+        f"chamber diameter {bore_dia:.2f} mm is outside T5.1's 18.0-18.5 mm -- "
+        f"the void has been sized to something other than the bore")
+    assert CANISTER_CLEARANCE_RADIUS_MM == (
+        CANISTER_DIAMETER_MM / 2.0 + CANISTER_SAFETY_ZONE_MM)
+    assert CANISTER_CLEARANCE_RADIUS_MM > inputs["canister_radius_mm"], (
+        "the clearance radius must exceed the bore, or the loft anchors on the "
+        "chamber and leaves no wall above it")
+    _pass("test_the_canister_void_is_the_bore_and_stays_legal")
+
+
+def test_the_loft_leaves_the_t5_5_wall_above_the_bore():
+    """Deck lands on the cartridge's flat face, not on the bore.
+
+    Anchoring the loft's rear end on the bore put the deck at z=44.1 mm, level
+    with the top of the chamber, leaving no material over it. Anchoring on the
+    assembly's outer face puts it at 47.1 mm, which is the part's flat surface
+    AND exactly T5.5's 3 mm of Model Block above the chamber.
+    """
+    from fixed_hardware import (CANISTER_CLEARANCE_RADIUS_MM,
+                                CANISTER_SAFETY_ZONE_MM, CANISTER_DIAMETER_MM)
+    gap = CANISTER_CLEARANCE_RADIUS_MM - CANISTER_DIAMETER_MM / 2.0
+    assert gap >= CANISTER_SAFETY_ZONE_MM - 1e-9, (
+        f"only {gap:.3f} mm between the bore and the loft anchor; T5.5 wants "
+        f"{CANISTER_SAFETY_ZONE_MM} mm of material above the chamber")
+    _pass("test_the_loft_leaves_the_t5_5_wall_above_the_bore")
+
+
+def test_wheel_supports_are_not_flipped_end_for_end():
+    """The bracket's body end must stay inboard and its wheel end outboard.
+
+    place_supports translated by `-lo[1]` with the comment "inner end (min y)
+    -> y=0". But lo[1] is the MINIMUM y, and in the CAD frame that is the
+    OUTBOARD end: front_wheel_support spans y[-36.5, 0] with front_wheel at
+    y[-36.5, -19.2]. So the translation put the wheel-mounting end on the
+    centreline and the body-mounting end out at the wheel -- inside-out, both
+    sides, every render.
+
+    The CAD halves are already positioned relative to each other, so the +y
+    instance is a pure MIRROR of the CAD, never a translation of it. Centroid y
+    discriminates: mirroring preserves |centroid|, the old translate-then-
+    mirror does not.
+    """
+    import sys as _s
+    from pathlib import Path as _P
+    _s.path.insert(0, str(_P(__file__).resolve().parent.parent / "sandbox"))
+    import hardware_assembly as HA
+
+    cad = HA._load("front_wheel_support.stl")
+    placed = HA.place_supports(120.0, 36.0)
+    left = placed["support_front_left"]
+
+    # x and z are placed; y must be untouched by anything but the mirror.
+    assert abs(abs(left.centroid[1]) - abs(cad.centroid[1])) < 1e-6, (
+        f"|centroid y| moved from {abs(cad.centroid[1])*1000:.2f} mm to "
+        f"{abs(left.centroid[1])*1000:.2f} mm -- the support has been "
+        f"translated in y, which flips it end-for-end")
+
+    right = placed["support_front_right"]
+    assert abs(left.centroid[1] + right.centroid[1]) < 1e-9, (
+        "the two sides are not mirror images of each other")
+    assert left.bounds[0][1] < 0 < right.bounds[1][1], (
+        "left/right supports are not on their own sides of the centreline")
+    _pass("test_wheel_supports_are_not_flipped_end_for_end")
+
+
 if __name__ == "__main__":
-    test_front_cylinder_x_center_at_x_front()
-    test_rear_cylinder_x_center_equals_x_front_plus_W()
-    test_cylinder_contains_point_inside()
-    test_cylinder_contains_point_outside()
-    test_cylinder_void_mask_shape()
-    test_cylinder_void_mask_centre_is_true()
-    test_wheel_disc_zone_contains_point_at_real_wheel_position()
-    test_wheel_disc_zone_excludes_centreline()
-    test_wheel_disc_zone_excludes_outside_x_z_circle()
-    test_wheel_disc_void_mask_shape()
-    test_four_wheel_zones_left_right_symmetric()
-    test_box_void_mask_shape()
-    test_halo_validation_behind_front_axle()
-    test_halo_validation_allows_at_or_before_front_axle()
-    test_halo_validation_allows_before_canister()
-    test_halo_validation_fails_if_past_rear_axle()
-    test_com_sanity_gate_catches_mm_as_m()
-    test_com_sanity_gate_valid()
-    test_com_sanity_gate_outside_car_length()
-    print("\nAll fixed_hardware tests passed.")
+    # Collected BY NAME. The hand-written list that used to live here silently
+    # skipped every test added after it was written -- see
+    # part3-simulation/tests/test_test_suites_run_what_they_define.py.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _failed = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        _fn = getattr(_mod, _n)
+        if not callable(_fn):
+            continue
+        try:
+            _fn()
+        except Exception as _exc:  # noqa: BLE001
+            print("FAIL %s: %s" % (_n, _exc))
+            _failed += 1
+    if _failed:
+        print("%d fixed_hardware test(s) FAILED." % _failed)
+        _sys.exit(1)
+    print("All fixed_hardware tests passed.")

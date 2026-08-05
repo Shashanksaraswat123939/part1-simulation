@@ -609,6 +609,25 @@ CANISTER_Z_MM: float = 35.0            # T5.2: 30.0-40.0mm, midpoint (rear-centr
 # T5 checks. Left here as the constant that check should read.
 CANISTER_SAFETY_ZONE_MM: float = 3.0   # ! UNCHECKED -- see note above
 
+# Outer radius of the cartridge ASSEMBLY: bore + T5.5's 3 mm wall = 12.125 mm.
+# hardware_cad/co2_canister.stl "already includes the minimum SAFETY ZONE around
+# the cartridge" (hardware_geometry.canister_front_x_mm) and measures 12.00 mm
+# about the bore axis, which is this figure to within the CAD's tessellation.
+#
+# NOT the void radius. The void is the BORE, because T5.1 regulates the chamber
+# at 18.0-18.5 mm and carving 24.25 mm makes the chamber itself illegal -- a
+# test asserts exactly that. The annulus between the bore and this radius is
+# supposed to be SOLID: it is the T5.5 wall, so body material there is correct
+# and is not an intersection with the cartridge. (Measured while chasing what
+# looked like one: the offending vertices sat at radius 9.05-11.91 mm, i.e.
+# almost entirely outside the 9.125 mm bore. They were the wall.)
+#
+# What it IS for: the surface the halo lofts to. Anchoring the loft's rear end
+# here rather than on the bore puts the deck at z = 47.1 mm instead of 44.1 mm,
+# which is the cartridge's flat outer face -- and leaves exactly the 3 mm of
+# material above the bore that T5.5 asks for.
+CANISTER_CLEARANCE_RADIUS_MM: float = CANISTER_DIAMETER_MM / 2.0 + CANISTER_SAFETY_ZONE_MM
+
 # Rear wing (T9.4, T9.5) -- mass and COM height are not given by the regs at all;
 # these are placeholders pending a real measured rear wing.
 REAR_WING_MASS_KG: float = 0.005       # design placeholder, ~5g
@@ -795,7 +814,11 @@ def halo_canister_loft_air_mask(halo_mask: "np.ndarray",
 
     # Canister front face and top, from the bore geometry.
     x_can_front_m = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
-    z_can_top_m = canister_cylinder.z_center_m + canister_cylinder.radius_m
+    # Outer face of the cartridge assembly, not the bore: the deck must
+    # arrive at the part's flat surface, which also leaves T5.5's 3 mm of
+    # material above the chamber. See CANISTER_CLEARANCE_RADIUS_MM.
+    z_can_top_m = canister_cylinder.z_center_m + mm_to_m(
+        CANISTER_CLEARANCE_RADIUS_MM)
     i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
 
     if i_can_front <= i_halo_rear + 1:
@@ -860,7 +883,11 @@ def halo_canister_loft_solid_mask(halo_mask: "np.ndarray",
     hz = _np.flatnonzero(halo_mask.any(axis=(0, 1)))
     z_halo_top_m = z_origin_m + float(hz[-1]) * d_m
     x_can_front_m = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
-    z_can_top_m = canister_cylinder.z_center_m + canister_cylinder.radius_m
+    # Outer face of the cartridge assembly, not the bore: the deck must
+    # arrive at the part's flat surface, which also leaves T5.5's 3 mm of
+    # material above the chamber. See CANISTER_CLEARANCE_RADIUS_MM.
+    z_can_top_m = canister_cylinder.z_center_m + mm_to_m(
+        CANISTER_CLEARANCE_RADIUS_MM)
     i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
 
     # Start one cell AFT of the halo: over the halo's own footprint T4.4.3
@@ -995,6 +1022,10 @@ def compute_default_fixed_hardware_inputs(
     return {
         "halo_geometry": halo_geometry,
         "canister_com_mm": canister_com_mm,
+        # The BORE, and it must stay the bore: T5.1 regulates the chamber at
+        # 18.0-18.5 mm, so carving the void at the CAD's outer 24.25 mm makes
+        # the chamber itself illegal. See CANISTER_CLEARANCE_RADIUS_MM for what
+        # the wider figure is and is not for.
         "canister_radius_mm": CANISTER_DIAMETER_MM / 2.0,
         "canister_depth_mm": CANISTER_DEPTH_MM,
         "canister_rear_face_x_mm": rear_face_x_m * 1000.0,

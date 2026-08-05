@@ -166,30 +166,40 @@ def place_wheels(W_mm: float, x_front_mm: float, hw_inputs) -> dict:
 def place_supports(W_mm: float, x_front_mm: float) -> dict:
     """Wheel support brackets: real meshes at each axle, both sides.
 
-    The support reaches from the body wall out to the wheel. We anchor its
-    INNER end (nearest y=0) at the body's outer wall and let it extend outward
-    to the wheel; mirror for the far side.
-    """
-    from geometry_contract import (
-        FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M, WHEEL_WIDTH_M,
-    )
+    The support reaches from the body wall out to the wheel.
 
+    IT WAS BEING FLIPPED END-FOR-END. The old code translated by `-lo[1]` with
+    the comment "inner end (min y) -> y=0", but lo[1] is the MINIMUM y, and in
+    the CAD frame that is the OUTBOARD end: front_wheel_support spans
+    y[-36.5, 0] and front_wheel sits at y[-36.5, -19.2], i.e. at the min-y end.
+    So the translation put the wheel-mounting end on the centreline and the
+    body-mounting end out at the wheel -- the bracket inside-out, on both
+    sides, in every render.
+
+    The parts are already positioned relative to each other in the export
+    frame: support and wheel share an x centre (173.25 mm front, 35.25 mm
+    rear), and the support runs from the centreline out to the wheel. So the
+    +y instance is a pure MIRROR of the CAD half, not a translation of it --
+    that maps the centreline end to y=0 and the wheel end to +36.5 while
+    keeping the bracket the right way round. Only x (onto the axle) and z (onto
+    the ground) are placed.
+    """
     out = {}
-    for axle, name, x_m, inner_y in (
-        ("front", "front_wheel_support.stl", x_front_mm / 1000.0, FRONT_WHEEL_INNER_Y_M),
-        ("rear", "rear_wheel_support.stl", (x_front_mm + W_mm) / 1000.0, REAR_WHEEL_INNER_Y_M),
+    for axle, name, x_m in (
+        ("front", "front_wheel_support.stl", x_front_mm / 1000.0),
+        ("rear", "rear_wheel_support.stl", (x_front_mm + W_mm) / 1000.0),
     ):
         mesh = _load(name)
-        # Recentre x on the axle, drop to the ground, put its span on +y.
         lo, hi = mesh.bounds
         base = mesh.copy()
         base.apply_translation([
-            x_m - (lo[0] + hi[0]) / 2.0,
-            -lo[1],                       # inner end (min y) -> y=0
+            x_m - (lo[0] + hi[0]) / 2.0,  # x centre -> axle line
+            0.0,                          # y: CAD is already centreline-to-wheel
             -lo[2],                       # bottom -> ground
         ])
-        out[f"support_{axle}_right"] = base
-        out[f"support_{axle}_left"] = _mirror_y(base)
+        # CAD half lies on -y, so that instance IS the left one; mirror for +y.
+        out[f"support_{axle}_left"] = base
+        out[f"support_{axle}_right"] = _mirror_y(base)
     return out
 
 
@@ -272,12 +282,21 @@ def build_hardware(W_mm: float, x_front_mm: float, d_halo_mm: float, bv,
     # fh carries canister_cylinder -- the bore as geometry. place_canister
     # seats the cartridge against it instead of probing the body surface at
     # cartridge height, where the body is hollow by design.
+    #
+    # It is the CALLER's job to supply it (geom.fixed_hardware). This used to
+    # try `place_fixed_hardware(**hw_inputs)` inside `except Exception: fh =
+    # None`, which is wrong twice over: that call is missing four required
+    # arguments (W_mm, x_front_mm, body_grid_shape, body_grid_origin_m) so it
+    # raised TypeError every single time, and the bare except swallowed it and
+    # fell back to the envelope anchor. The cartridge then landed 11 mm forward
+    # of its bore while the code reported it was seated in it. Warn instead --
+    # a fallback that hides its own failure is how this went unnoticed.
     if fh is None:
-        try:
-            from fixed_hardware import place_fixed_hardware
-            fh = place_fixed_hardware(**hw_inputs)
-        except Exception:
-            fh = None
+        warnings.warn(
+            "build_hardware got no fixed-hardware result, so the cartridge is "
+            "anchored to the ENVELOPE rear rather than its bore. Pass "
+            "fh=geom.fixed_hardware for the real placement.",
+            RuntimeWarning, stacklevel=2)
 
     parts: dict = {}
     parts.update(place_wheels(W_mm, x_front_mm, hw_inputs))
