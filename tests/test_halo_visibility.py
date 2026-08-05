@@ -164,6 +164,105 @@ def test_the_constraint_binds_during_the_descent_not_after():
             "optimiser is free to fill it and hide the halo from the top view")
 
 
+
+
+def test_the_halo_lofts_to_the_canister():
+    """A continuous top surface from the halo's rear to the cartridge.
+
+    01_generative_geometry specifies "the halo-canister loft region", and
+    unified_phi's header recorded that "nothing implemented a loft and the
+    boxes forbade one". Unifying the field removed the second half -- a surface
+    CAN cross the main_body/rearpod boundary now -- but still nothing built
+    one, and Stage 1's proxy has no aerodynamic term, so filling to the
+    envelope roof cost it nothing. Measured on the carved car along the
+    centreline before this existed:
+
+        x =  90 mm   top 23.5 mm     (held down by halo visibility)
+        x = 100 mm   top 51.5 mm     <- 28 mm vertical cliff
+        x = 130 mm   top 53.5 mm     flat slab to the tail
+
+    A CEILING alone does not fix it: bounding the surface took the cliff out
+    (53.5 -> 38.5 mm) but mass minimisation then settled the deck at 38.5 mm
+    against a 44.1 mm canister top, running PAST the cartridge instead of
+    arriving at it. So the deck is required material, and this checks it
+    arrives -- within a cell of the loft line at both ends.
+    """
+    import geometry_contract as gc
+    from fixed_hardware import (halo_canister_loft_solid_mask,
+                                LOFT_SKIN_THICKNESS_MM)
+
+    geom = _carved_car(n_iters=0)
+    fh = geom.fixed_hardware
+    cyl = getattr(fh, "canister_cylinder", None)
+    assert cyl is not None, "no canister bore geometry to loft to"
+
+    loft = halo_canister_loft_solid_mask(
+        fh.halo_void_mask, cyl,
+        x_origin_m=geom.region.origin_m[0],
+        y_origin_m=geom.region.origin_m[1],
+        z_origin_m=geom.region.origin_m[2],
+        d_m=gc.GRID_SPACING_M,
+    )
+    assert loft.any(), "no loft deck was built at all"
+
+    dz = gc.GRID_SPACING_M
+    halo = fh.halo_void_mask
+    i_halo_rear = int(np.flatnonzero(halo.any(axis=(1, 2)))[-1])
+    z_halo_top = geom.region.origin_m[2] +         float(np.flatnonzero(halo.any(axis=(0, 1)))[-1]) * dz
+    z_can_top = cyl.z_center_m + cyl.radius_m
+    i_can_front = int(round(
+        (cyl.x_center_m - cyl.x_half_width_m - geom.region.origin_m[0]) / dz))
+
+    xs = np.flatnonzero(loft.any(axis=(1, 2)))
+    assert xs[0] > i_halo_rear, (
+        "the deck starts over the halo itself, where T4.4.3 forces air")
+    assert xs[-1] >= i_can_front - 1, (
+        f"the deck stops at x-index {xs[-1]} but the canister front is at "
+        f"{i_can_front} -- it does not reach the cartridge")
+
+    # Its top must follow the loft line at both ends, within one cell.
+    def deck_top(i):
+        k = np.flatnonzero(loft[i].any(axis=0))
+        return geom.region.origin_m[2] + float(k[-1]) * dz
+
+    tol = 1.5 * dz
+    assert abs(deck_top(xs[0]) - z_halo_top) <= tol, (
+        f"deck starts at {deck_top(xs[0])*1000:.1f} mm, halo top is "
+        f"{z_halo_top*1000:.1f} mm -- it does not leave from the halo")
+    assert abs(deck_top(xs[-1]) - z_can_top) <= tol, (
+        f"deck ends at {deck_top(xs[-1])*1000:.1f} mm, canister top is "
+        f"{z_can_top*1000:.1f} mm -- it does not arrive at the cartridge")
+
+    # A skin, not a filled block: the mass budget cannot afford the latter.
+    thick_cells = loft.sum(axis=2).max()
+    max_cells = int(round(LOFT_SKIN_THICKNESS_MM / (dz * 1000.0))) + 1
+    assert thick_cells <= max_cells, (
+        f"the deck is {thick_cells} cells thick; it is meant to be a "
+        f"{LOFT_SKIN_THICKNESS_MM} mm skin, not a solid block")
+
+
+def test_the_loft_ceiling_and_deck_agree():
+    """Ceiling and deck must be the same surface, not two guesses at it."""
+    import geometry_contract as gc
+    from fixed_hardware import (halo_canister_loft_air_mask,
+                                halo_canister_loft_solid_mask)
+
+    geom = _carved_car(n_iters=0)
+    fh = geom.fixed_hardware
+    kw = dict(x_origin_m=geom.region.origin_m[0],
+              z_origin_m=geom.region.origin_m[2], d_m=gc.GRID_SPACING_M)
+    air = halo_canister_loft_air_mask(fh.halo_void_mask,
+                                      fh.canister_cylinder, **kw)
+    deck = halo_canister_loft_solid_mask(
+        fh.halo_void_mask, fh.canister_cylinder,
+        y_origin_m=geom.region.origin_m[1], **kw)
+    overlap = int((air & deck).sum())
+    assert overlap == 0, (
+        f"{overlap:,} cells are both forced air (above the loft) and forced "
+        f"solid (the deck). hard_solid &= ~hard_air would silently delete "
+        f"them and the deck would come out full of holes.")
+
+
 if __name__ == "__main__":
     _mod = sys.modules[__name__]
     for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):

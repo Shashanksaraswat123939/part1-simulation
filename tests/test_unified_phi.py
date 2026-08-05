@@ -141,12 +141,26 @@ def test_cartridge_bore_is_carved_and_open_at_the_rear():
 
 
 def test_virtual_cargo_is_forced_solid_when_requested():
+    """with_cargo must be what decides the CARGO region, and only that.
+
+    The second assertion used to be "with_cargo=False forces nothing solid",
+    which stopped holding once the halo->canister loft deck became forced
+    material independently of cargo. Comparing the two geometries isolates the
+    cargo's own contribution, which is what this test is actually about, and
+    still fails if with_cargo=False smuggles a cargo block in.
+    """
     with_cargo = _geom(with_cargo=True)
     without = _geom(with_cargo=False)
-    assert int(with_cargo.phi.hard_mask_solid.sum()) > 0, \
-        "T4.2 cargo should force a solid region"
-    assert int(without.phi.hard_mask_solid.sum()) == 0, \
-        "with_cargo=False should force nothing solid"
+    n_with = int(with_cargo.phi.hard_mask_solid.sum())
+    n_without = int(without.phi.hard_mask_solid.sum())
+    assert n_with > n_without, "T4.2 cargo should force a solid region"
+
+    # Everything forced without cargo must also be forced with it: the cargo
+    # ADDS, it does not relocate the loft.
+    only_without = without.phi.hard_mask_solid & ~with_cargo.phi.hard_mask_solid
+    assert int(only_without.sum()) == 0, (
+        f"{int(only_without.sum()):,} cells are forced solid only when cargo is "
+        f"OFF -- the two forced regions are interfering")
     _pass("test_virtual_cargo_is_forced_solid_when_requested")
 
 
@@ -168,15 +182,45 @@ def test_machined_length_excludes_the_printed_nose():
 
 
 def test_no_attachment_strips_are_needed():
-    # The four-box path forced a strip of cells solid at each component's
-    # neighbouring face to keep the assembly connected. With one field that
-    # crutch is gone: the ONLY forced-solid region is the T4.2 cargo.
+    """No CONNECTIVITY crutches -- specified geometry is a different thing.
+
+    The four-box path forced a strip of cells solid at each component's
+    neighbouring face to keep the assembly connected. With one field that
+    crutch is gone, and it must stay gone.
+
+    Forced-solid is now exactly two things, both SPECIFIED rather than
+    structural: the T4.2 cargo, and the halo->canister loft deck (this
+    module's own header: "the continuous top surface running from the
+    cartridge chamber at the rear, forward over the halo mount"). This used to
+    assert hard_solid was empty without cargo, which also happened to catch
+    attachment strips -- but that stopped being the right test the moment a
+    second legitimate forced region existed. Assert the COMPOSITION instead, so
+    a genuine strip still fails while the loft does not.
+    """
+    import geometry_contract as gc
+    from fixed_hardware import halo_canister_loft_solid_mask
+
     with_cargo = _geom(with_cargo=True)
     without = _geom(with_cargo=False)
-    from virtual_cargo import build_virtual_cargo_solid_mask  # noqa: F401
-    assert int(without.phi.hard_mask_solid.sum()) == 0, \
-        "something other than the cargo is forcing cells solid"
-    assert int(with_cargo.phi.hard_mask_solid.sum()) > 0
+
+    fh = without.fixed_hardware
+    loft = halo_canister_loft_solid_mask(
+        fh.halo_void_mask, getattr(fh, "canister_cylinder", None),
+        x_origin_m=without.region.origin_m[0],
+        y_origin_m=without.region.origin_m[1],
+        z_origin_m=without.region.origin_m[2],
+        d_m=gc.GRID_SPACING_M,
+    )
+    assert loft.any(), "the loft deck is empty -- it must span halo to canister"
+
+    # Mirrored onto the left half by build_unified_geometry, so mirror here too.
+    loft = loft | loft[:, ::-1, :]
+    residue = without.phi.hard_mask_solid & ~loft
+    assert int(residue.sum()) == 0, (
+        f"{int(residue.sum()):,} cells are forced solid that are neither cargo "
+        f"nor the halo-canister loft -- an attachment strip has come back")
+    assert int(with_cargo.phi.hard_mask_solid.sum()) > \
+        int(without.phi.hard_mask_solid.sum()), "cargo forces nothing solid"
     _pass("test_no_attachment_strips_are_needed")
 
 

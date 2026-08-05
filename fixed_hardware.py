@@ -742,6 +742,156 @@ def halo_visibility_air_mask(halo_mask: "np.ndarray",
     return out & ~halo_mask
 
 
+def halo_canister_loft_air_mask(halo_mask: "np.ndarray",
+                                canister_cylinder,
+                                x_origin_m: float,
+                                z_origin_m: float,
+                                d_m: float) -> "np.ndarray":
+    """Cells above the halo->canister loft, which must be AIR.
+
+    01_generative_geometry specifies "the continuous top surface running from
+    the cartridge chamber at the rear, forward over the halo mount", and
+    unified_phi's own header records that "nothing implemented a loft and the
+    boxes forbade one". Unifying the field removed the second half of that --
+    a surface CAN now cross the main_body/rearpod boundary -- but still nothing
+    built the loft, so the optimiser never had a reason to.
+
+    What it produced instead, measured on the 2026-08-05 carved car along the
+    centreline:
+
+        x =  90 mm   body top 23.5 mm   (held down by the halo visibility rule)
+        x = 100 mm   body top 51.5 mm
+        x = 130 mm   body top 53.5 mm
+
+    a 28 mm vertical cliff the instant the halo's shadow ends, then a flat slab
+    to the tail. The visibility mask constrains only the halo's own shadow;
+    aft of the halo the field was free to fill to the envelope roof, and since
+    Stage 1's proxy has no aerodynamics, filling it costs nothing it can see.
+
+    So the loft is imposed as geometry, the same way the visibility rule is: a
+    CEILING over the span between the halo's rear face and the canister's front
+    face, linearly interpolating from the halo top to the canister top, with
+    everything above it forced to hard air. The optimiser may still carve BELOW
+    the loft -- this bounds the surface, it does not prescribe it.
+
+    Smoothstep rather than a straight ramp: a linear ceiling meets the halo top
+    and the canister top at a slope discontinuity, and a crease is both a drag
+    feature and a stress raiser. smoothstep is C1 at both ends.
+    """
+    import numpy as _np
+
+    if canister_cylinder is None:
+        return _np.zeros_like(halo_mask, dtype=bool)
+
+    nx, ny, nz = halo_mask.shape
+    hx = _np.flatnonzero(halo_mask.any(axis=(1, 2)))
+    if hx.size == 0:
+        return _np.zeros_like(halo_mask, dtype=bool)
+
+    # Halo rear face and its top, from the halo's own rasterised extent.
+    i_halo_rear = int(hx[-1])
+    hz = _np.flatnonzero(halo_mask.any(axis=(0, 1)))
+    z_halo_top_m = z_origin_m + float(hz[-1]) * d_m
+
+    # Canister front face and top, from the bore geometry.
+    x_can_front_m = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
+    z_can_top_m = canister_cylinder.z_center_m + canister_cylinder.radius_m
+    i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
+
+    if i_can_front <= i_halo_rear + 1:
+        # Halo already at its rearward limit against the canister: no span to
+        # loft over. Not an error -- d_halo_max is defined by exactly this.
+        return _np.zeros_like(halo_mask, dtype=bool)
+
+    out = _np.zeros_like(halo_mask, dtype=bool)
+    ks = _np.arange(nz)[None, :]
+    i0, i1 = i_halo_rear, min(i_can_front, nx - 1)
+    t = (_np.arange(i0, i1 + 1, dtype=_np.float64) - i0) / float(i1 - i0)
+    t = t * t * (3.0 - 2.0 * t)                      # smoothstep, C1 at both ends
+    z_ceiling = z_halo_top_m + t * (z_can_top_m - z_halo_top_m)
+    k_ceiling = _np.ceil((z_ceiling - z_origin_m) / d_m).astype(int)
+    out[i0:i1 + 1] = (ks > k_ceiling[:, None])[:, None, :]
+    return out & ~halo_mask
+
+
+# Thickness of the lofted deck. Thin: this is a skin spanning halo to canister,
+# not a filled block, and every gram of it comes out of the T3.6 budget.
+LOFT_SKIN_THICKNESS_MM: float = 2.0
+
+
+def halo_canister_loft_solid_mask(halo_mask: "np.ndarray",
+                                  canister_cylinder,
+                                  x_origin_m: float,
+                                  y_origin_m: float,
+                                  z_origin_m: float,
+                                  d_m: float) -> "np.ndarray":
+    """The lofted deck itself: cells that must be SOLID.
+
+    halo_canister_loft_air_mask alone does not produce a loft. A ceiling only
+    says "no higher"; with no aerodynamic term in Stage 1's proxy, mass
+    minimisation then pulls the top surface as far BELOW the ceiling as it
+    likes. Measured after adding the ceiling: the cliff went (53.5 -> 38.5 mm
+    aft of the halo, good) but the deck settled flat at 38.5 mm while the
+    canister top is at 44.1 mm, so the surface ran past the cartridge instead
+    of arriving at it -- and the bore was left open to the sky, 28.4 mm of body
+    at x=160 against a bore reaching 47 mm.
+
+    "The back of the halo lofts to the canister" is a statement about a surface
+    that EXISTS, so it has to be required material, not permitted volume. This
+    forces a skin of LOFT_SKIN_THICKNESS_MM immediately under the same
+    smoothstep line the ceiling uses, so the two agree by construction: the
+    deck lands on the ceiling and the ceiling is the loft.
+
+    Width is limited to the halo/canister half-width rather than the full body
+    -- the loft is the spine joining two centreline parts, and forcing it the
+    full 65 mm would be inventing bodywork the rule does not ask for and the
+    mass budget cannot afford.
+    """
+    import numpy as _np
+
+    if canister_cylinder is None:
+        return _np.zeros_like(halo_mask, dtype=bool)
+    nx, ny, nz = halo_mask.shape
+    hx = _np.flatnonzero(halo_mask.any(axis=(1, 2)))
+    if hx.size == 0:
+        return _np.zeros_like(halo_mask, dtype=bool)
+
+    i_halo_rear = int(hx[-1])
+    hz = _np.flatnonzero(halo_mask.any(axis=(0, 1)))
+    z_halo_top_m = z_origin_m + float(hz[-1]) * d_m
+    x_can_front_m = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
+    z_can_top_m = canister_cylinder.z_center_m + canister_cylinder.radius_m
+    i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
+
+    # Start one cell AFT of the halo: over the halo's own footprint T4.4.3
+    # forces air, and a deck there would fight the visibility rule.
+    i0 = i_halo_rear + 1
+    i1 = min(i_can_front, nx - 1)
+    if i1 <= i0:
+        return _np.zeros_like(halo_mask, dtype=bool)
+
+    hy = _np.flatnonzero(halo_mask.any(axis=(0, 2)))
+    y_half_m = max(
+        (float(hy[-1] - hy[0]) * d_m) / 2.0,
+        canister_cylinder.radius_m,
+    )
+    ys = y_origin_m + _np.arange(ny) * d_m
+    in_y = _np.abs(ys) <= y_half_m
+
+    t = (_np.arange(i0, i1 + 1, dtype=_np.float64) - i_halo_rear) / \
+        float(i1 - i_halo_rear)
+    t = t * t * (3.0 - 2.0 * t)
+    z_top = z_halo_top_m + t * (z_can_top_m - z_halo_top_m)
+    k_top = _np.floor((z_top - z_origin_m) / d_m).astype(int)
+    k_bot = k_top - max(int(round(LOFT_SKIN_THICKNESS_MM / (d_m * 1000.0))), 1)
+
+    ks = _np.arange(nz)[None, :]
+    band = (ks <= k_top[:, None]) & (ks > k_bot[:, None])       # (span, nz)
+    out = _np.zeros_like(halo_mask, dtype=bool)
+    out[i0:i1 + 1] = band[:, None, :] & in_y[None, :, None]
+    return out & ~halo_mask
+
+
 def default_halo_cross_section_yz_m() -> list[tuple[float, float]]:
     """Conservative rectangular halo cross-section, see U1 note above."""
     hw = mm_to_m(HALO_CROSS_SECTION_HALF_WIDTH_MM)

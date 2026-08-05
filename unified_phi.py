@@ -537,6 +537,21 @@ def build_unified_geometry(
             z_origin_m=region.origin_m[2],
             dz_m=GRID_SPACING_M,
         )
+
+        # The halo->canister loft. Making a surface across the component
+        # boundary REPRESENTABLE (this module's whole point) did not make one
+        # get built: the visibility mask bounds only the halo's own shadow, so
+        # aft of the halo the field filled to the envelope roof and left a
+        # 28 mm cliff behind the halo. The loft is a ceiling, not a shape --
+        # the optimiser still chooses everything under it.
+        from fixed_hardware import halo_canister_loft_air_mask
+        hard_air |= halo_canister_loft_air_mask(
+            fixed_hardware.halo_void_mask,
+            getattr(fixed_hardware, "canister_cylinder", None),
+            x_origin_m=region.origin_m[0],
+            z_origin_m=region.origin_m[2],
+            d_m=GRID_SPACING_M,
+        )
     except ImportError:
         # Part 2 supplies FixedHardwareSpec. Without it there are no hardware
         # voids -- loud in the returned object (fixed_hardware is None), not
@@ -573,6 +588,26 @@ def build_unified_geometry(
             placement["x_start_m"], z_base,
             flip=placement.get("flip", False),
         )
+
+    # The lofted deck itself. The ceiling above (halo_canister_loft_air_mask)
+    # only bounds the surface; with no aero term in Stage 1's proxy, mass
+    # minimisation then pulls the deck well below it -- measured flat at 38.5 mm
+    # against a 44.1 mm canister top, running past the cartridge instead of
+    # arriving at it. "Lofts to the canister" describes a surface that exists,
+    # so the skin is required material.
+    if fixed_hardware is not None:
+        try:
+            from fixed_hardware import halo_canister_loft_solid_mask
+            hard_solid |= halo_canister_loft_solid_mask(
+                fixed_hardware.halo_void_mask,
+                getattr(fixed_hardware, "canister_cylinder", None),
+                x_origin_m=region.origin_m[0],
+                y_origin_m=region.origin_m[1],
+                z_origin_m=region.origin_m[2],
+                d_m=GRID_SPACING_M,
+            )
+        except ImportError:
+            pass
 
     _mirror_right_onto_left(hard_solid)
 
