@@ -140,12 +140,40 @@ def test_level2_evolution_strictly_reduces_the_objective():
             assert b <= a + 1e-6, (
                 f"objective increased while still ABOVE the legal floor, where "
                 f"nothing should be pushing back: {above}")
-    below = [t for t, m in zip(ts, masses)
-             if competition_mass_kg(m) < PROXY_MIN_MASS_KG]
-    if below and above:
-        assert max(below) > min(above), (
-            f"the T3.6 barrier is not penalising an underweight car: above "
-            f"{above}, below {below}")
+    # The barrier must BOUND the descent below the floor, not merely tax it.
+    #
+    # This used to assert max(below) > min(above) -- that an underweight sample
+    # scores worse than a legal one. That held only because the descent ran so
+    # far past the floor (2.5-4.1 g under, measured) that the quadratic penalty
+    # grew large enough to outweigh the mass term. It was measuring how badly
+    # the descent overshot, so tightening the descent made it fail. Asserting
+    # the bound directly is the property actually wanted.
+    #
+    # The residual overshoot is a DISCRETISATION limit, not a formulation one.
+    # The Hamilton-Jacobi step moves the surface by CFL x spacing regardless of
+    # gradient magnitude, so at 2 mm one step changes mass by ~1-2 g and the
+    # descent oscillates about the floor rather than resting on it. Measured
+    # over n = 15/40/90/150 at 2 mm:
+    #     subtracting the barrier  -2.47  -4.14  -3.13  -2.81  g
+    #     replacing it             -2.32  -0.85  -1.53  -1.28  g
+    # Stage 2 runs the same descent at 0.5 mm, where a step moves ~4x less
+    # mass, and Stage 2 is what decides the built car's legality -- Stage 1 only
+    # ranks (W, x_front) and hands over a seed.
+    deficits_g = [(PROXY_MIN_MASS_KG - competition_mass_kg(m)) * 1000.0
+                  for m in masses]
+    worst = max(deficits_g)
+    assert worst < 3.0, (
+        f"the descent ran {worst:.2f} g past the T3.6 floor; the barrier is "
+        f"not bounding it (deficits per sample, g: "
+        f"{[round(d, 2) for d in deficits_g]})")
+
+    # And it must RECOVER rather than run away: the deepest violation must not
+    # be at the largest iteration count, or the barrier is merely slowing a
+    # descent it never reverses.
+    if len(deficits_g) >= 2 and worst > 0:
+        assert deficits_g[-1] <= worst - 1e-9 or worst <= 0, (
+            f"the deepest violation is at the LAST sample, so the barrier "
+            f"never turns the descent around: {[round(d, 2) for d in deficits_g]}")
     _pass("test_level2_evolution_strictly_reduces_the_objective")
 
 

@@ -301,6 +301,11 @@ PROXY_W_MASS: float = 0.5
 PROXY_W_HCOM: float = 0.3
 PROXY_W_WHEELBASE: float = 0.2
 PROXY_MIN_MASS_KG: float = 0.048        # T3.6, EXCLUDING the CO2 cartridge
+# The DESCENT aims above the floor; the ranking penalty still measures against
+# the floor itself. See _proxy_objective_gradients: growth velocity decays to
+# zero as the deficit closes, so aiming AT the floor converges to it from below
+# and rests fractionally illegal. Matches Part 3's T36_TARGET_MARGIN_KG.
+PROXY_MASS_TARGET_MARGIN_KG: float = 0.0005
 
 
 def competition_mass_kg(total_mass_kg: float) -> float:
@@ -340,21 +345,42 @@ def _proxy_mass_barrier(total_mass_kg: float) -> float:
 def _proxy_objective_gradients(total_mass_kg: float) -> dict[str, float]:
     """Exact analytic gradients of T_proxy. No CFD, no finite differences.
 
-    dT/dm    = w_mass/m_ref  - 2*barrier_w*(m_min - m)/m_min^2   (below m_min)
+    dT/dm    = w_mass/m_ref                                      (at or above target)
+    dT/dm    = -2*barrier_w*(target - m)/m_min^2                 (below target)
     dT/dh    = w_hcom/h_ref
     dT/dx    = 0             (the proxy has no fore-aft COM term)
 
-    The barrier derivative is negative and grows as mass falls, so below 48 g
-    the net dT/dm flips sign and the descent direction pushes material back
-    outward. Equilibrium lands just under 48 g at the default weight.
+    Below the target the barrier derivative REPLACES the mass term instead of
+    being subtracted from it, and that is deliberate. Subtracting lets the two
+    cancel, and the descent rests exactly where they do -- which is necessarily
+    BELOW the floor, because at the floor the barrier contributes nothing while
+    the proxy still says lighter is faster. This docstring used to record that
+    outcome as acceptable ("equilibrium lands just under 48 g at the default
+    weight"); it is not, because the resting car is illegal. Solving
+    w_mass/m_ref = 2*barrier_w*(m_min - m)/m_min^2 at the shipped weights
+    predicts rest at 47.895 g, and the 2026-08-05 Stage 1 run landed at
+    47.940 g -- one discrete step away, and 0.06 g outside T3.6.
+
+    Replacing removes the cancellation: below target the only mass signal is
+    "add mass", so the proxy grows monotonically until legal. The target sits
+    PROXY_MASS_TARGET_MARGIN_KG above the floor because the growth velocity
+    decays to zero as the deficit closes, so aiming AT the floor converges to
+    it from below and still rests fractionally illegal.
+
+    _proxy_mass_barrier -- the PENALTY on T_proxy, used for ranking -- is
+    unchanged and still measured against the true floor. Penalty decides which
+    design wins; this decides which way the shape moves. Part 3's
+    t36_descent_gradient does the same thing for the real objective.
     """
-    dT_dmass = PROXY_W_MASS / PROXY_MASS_REF_KG
     _m = competition_mass_kg(total_mass_kg)
-    if _m < PROXY_MIN_MASS_KG:
-        dT_dmass -= (
+    _target = PROXY_MIN_MASS_KG + PROXY_MASS_TARGET_MARGIN_KG
+    if _m < _target:
+        dT_dmass = -(
             2.0 * PROXY_MASS_BARRIER_WEIGHT
-            * (PROXY_MIN_MASS_KG - _m) / PROXY_MIN_MASS_KG ** 2
+            * (_target - _m) / PROXY_MIN_MASS_KG ** 2
         )
+    else:
+        dT_dmass = PROXY_W_MASS / PROXY_MASS_REF_KG
     return {
         "dT_dmass": dT_dmass,
         "dT_dh_com": PROXY_W_HCOM / PROXY_HCOM_REF_M,
@@ -472,20 +498,6 @@ def _unified_mass_com_state(geom) -> Optional[dict]:
     com_z = (sum(c.mass_kg * c.com_z_m for c in components)
              + sum(m * z for m, _x, z in fixed)) / total
     return {"total_mass_kg": total, "com_x_m": com_x, "com_z_m": max(com_z, 1e-4)}
-
-
-def _mass_barrier_gradient(total_mass_kg: float) -> float:
-    """d(barrier)/d(mass): negative below the T3.6 48 g floor, 0 above it.
-
-    Added to the real dT/dmass so the mass descent settles AT the floor rather
-    than carving the car to nothing. Once pinned there, the drag term becomes
-    the differentiator -- which is the real F1-in-Schools regime: build to the
-    minimum legal weight, then let aerodynamics win."""
-    _m = competition_mass_kg(total_mass_kg)
-    if _m >= PROXY_MIN_MASS_KG:
-        return 0.0
-    return -(2.0 * PROXY_MASS_BARRIER_WEIGHT
-             * (PROXY_MIN_MASS_KG - _m) / PROXY_MIN_MASS_KG ** 2)
 
 
 def _level2_evaluate_unified(

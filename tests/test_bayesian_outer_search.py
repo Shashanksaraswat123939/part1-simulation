@@ -248,22 +248,77 @@ def test_mini_search_with_botorch():
     _pass("test_mini_search_with_botorch")
 
 
+
+
+def test_the_proxy_descent_rests_legal_not_just_near_the_floor():
+    """A subtracted barrier rests INSIDE the illegal region, not at the floor.
+
+    _proxy_objective_gradients used to compute
+        dT/dm = w_mass/m_ref - 2*barrier_w*(m_min - m)/m_min^2
+    and its docstring recorded the outcome as fine: "equilibrium lands just
+    under 48 g at the default weight". It is not fine -- the resting car is
+    illegal under T3.6. Subtracting lets the two terms cancel and the descent
+    rests exactly where they do, which is necessarily below the floor, because
+    at the floor the barrier contributes nothing while the proxy still says
+    lighter is faster.
+
+    Solving for that rest point at the shipped weights predicts 47.895 g, and
+    the 2026-08-05 Stage 1 run landed at 47.940 g -- one discrete step away,
+    and 0.06 g outside the rule. Part 3 had the identical defect in
+    t36_mass_barrier and is fixed the same way.
+    """
+    import bayesian_outer_search as b
+    cartridge = 0.023
+    for start in (0.0469, 0.0440, 0.0300):
+        m = start
+        for _ in range(50000):
+            m -= 1e-6 * b._proxy_objective_gradients(m + cartridge)["dT_dmass"]
+        assert m >= b.PROXY_MIN_MASS_KG, (
+            f"proxy descent from {start*1000:.1f} g rests at {m*1000:.3f} g "
+            f"competition mass, under the {b.PROXY_MIN_MASS_KG*1000:.0f} g "
+            f"floor -- the barrier is cancelling against the mass term instead "
+            f"of replacing it")
+    _pass("test_the_proxy_descent_rests_legal_not_just_near_the_floor")
+
+
+def test_the_proxy_ranking_penalty_still_uses_the_true_floor():
+    """Descent aims above the floor; RANKING must not.
+
+    The two jobs are separate: the penalty decides which design wins, the
+    gradient decides which way the shape moves. If the margin leaked into the
+    penalty, a legal 48.2 g car would be scored as a rule violation.
+    """
+    import bayesian_outer_search as b
+    cartridge = 0.023
+    assert b._proxy_mass_barrier(b.PROXY_MIN_MASS_KG + cartridge) == 0.0, (
+        "a car exactly at the 48 g floor is being penalised")
+    assert b._proxy_mass_barrier(
+        b.PROXY_MIN_MASS_KG + b.PROXY_MASS_TARGET_MARGIN_KG + cartridge) == 0.0
+    assert b._proxy_mass_barrier(0.047 + cartridge) > 0.0, (
+        "an underweight car carries no ranking penalty")
+    _pass("test_the_proxy_ranking_penalty_still_uses_the_true_floor")
+
+
 if __name__ == "__main__":
-    test_to_unit_at_bounds()
-    test_round_trip_normalisation()
-    test_is_valid_accepts_good_params()
-    test_is_valid_rejects_W_out_of_range()
-    test_is_valid_rejects_x_front_too_small()
-    test_is_valid_rejects_d_halo_too_large()
-    test_level2_returns_evaluation_result()
-    test_level2_race_time_is_positive()
-    test_level2_mass_is_physical()
-    test_level2_saves_phi_snapshots()
-    test_level2_smaller_W_gives_different_time()
-    test_level2_evolution_loop_runs_without_crashing()
-    test_warm_start_none_when_no_results()
-    test_warm_start_found_for_nearby_point()
-    test_warm_start_none_for_distant_point()
-    test_evaluation_result_normalised_params()
-    test_mini_search_with_botorch()
-    print("\nAll bayesian_outer_search tests passed.")
+    # Collected BY NAME, not listed by hand. The hand-written list that used to
+    # live here silently skipped every test added after it was written -- it
+    # missed two and still printed "All bayesian_outer_search tests passed".
+    # tests/test_test_suites_run_what_they_define.py guards against exactly this.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _failed = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        _fn = getattr(_mod, _n)
+        if not callable(_fn):
+            continue
+        try:
+            # No PASS print here -- the tests in this file announce themselves
+            # via _pass(), and printing again reported every test twice.
+            _fn()
+        except Exception as _exc:  # noqa: BLE001
+            print("FAIL %s: %s" % (_n, _exc))
+            _failed += 1
+    if _failed:
+        print("%d bayesian_outer_search test(s) FAILED." % _failed)
+        _sys.exit(1)
+    print("All bayesian_outer_search tests passed.")
