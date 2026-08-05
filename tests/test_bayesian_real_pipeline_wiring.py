@@ -55,7 +55,13 @@ def _make_fake_bindings():
         )
 
     def compute_mass_report(phi_grids):
-        return MassReport(total_mass_kg=0.052, com_x_m=0.06, com_y_m=0.0, com_z_m=0.02)
+        # A LEGAL mass: 48 g competition + 23 g cartridge. This test asserts
+        # that KNOWN_T_PENALIZED arrives from Part 3 unchanged, so the fake car
+        # must not trip any of Part 3's own penalties -- it was 0.052 kg, i.e.
+        # 29 g of competition mass, and once Stage 2 gained the T3.6 minimum-
+        # mass barrier that added 15.7 s and the assertion read as a wiring
+        # break. The stub mass was arbitrary; being legal is also more realistic.
+        return MassReport(total_mass_kg=0.071, com_x_m=0.06, com_y_m=0.0, com_z_m=0.02)
 
     def run_cfd(stl_half_path):
         return CFDOutcome(D20=1.2, L=-0.3, Cm=0.01, A=0.008, converged=True, residual_final=1e-5)
