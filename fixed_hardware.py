@@ -973,12 +973,37 @@ def halo_canister_loft_air_mask(halo_mask: "np.ndarray",
         return _np.zeros_like(halo_mask, dtype=bool)
     i0, i1, z_top, valid = prof
 
-    nz = halo_mask.shape[2]
+    nx, ny, nz = halo_mask.shape
     ks = _np.arange(nz)[None, None, :]
     k_ceil = _np.ceil((z_top - z_origin_m) / d_m)
-    k_ceil = _np.where(valid[None, :], k_ceil, _np.inf)
+
+    # THE CEILING IS THE CAR'S ROOF, so it spans the full width and runs to the
+    # tail -- not just the strip where both end profiles are defined.
+    #
+    # Capping only |y| <= ~12 mm and only x <= the bore front left the field
+    # unconstrained everywhere else, and it went straight up to the envelope:
+    # measured on the 2026-08-06 car, 10,662 solid cells above z=45 mm in two
+    # towers, 2,156 of them at x 100-120 outboard of the deck and 7,122 at
+    # x 180-205 above and behind the cartridge. Nothing was wrong with the loft;
+    # there was simply no roof anywhere else, and a body that is 47 mm tall over
+    # its spine and 54 mm tall beside it is not a shape anyone intended.
+    #
+    # Outboard of the deck the crown is held at the deck's own height rather
+    # than extrapolated: the two profiles being interpolated only exist across
+    # the parts' width, so continuing the curve past them would be inventing a
+    # surface. Holding it flat bounds the roof without prescribing the flanks,
+    # and the optimiser still chooses everything below.
+    crown = _np.where(valid[None, :], k_ceil, _np.inf).min(axis=1)   # (span,)
+    full = _np.repeat(crown[:, None], ny, axis=1)
+    k_ceil = _np.where(valid[None, :], k_ceil, full)
+
     out = _np.zeros_like(halo_mask, dtype=bool)
     out[i0:i1 + 1] = ks > k_ceil[:, :, None]
+    # Aft of the cartridge front the roof holds at the cartridge's own crown:
+    # there is no further part to loft to, and the tail has no business
+    # standing taller than the thing it runs back from.
+    if i1 + 1 < nx:
+        out[i1 + 1:] = ks > crown[-1]
     return out & ~halo_mask
 
 
