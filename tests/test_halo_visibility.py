@@ -208,8 +208,15 @@ def test_the_halo_lofts_to_the_canister():
     dz = gc.GRID_SPACING_M
     halo = fh.halo_void_mask
     i_halo_rear = int(np.flatnonzero(halo.any(axis=(1, 2)))[-1])
-    z_halo_top = geom.region.origin_m[2] +         float(np.flatnonzero(halo.any(axis=(0, 1)))[-1]) * dz
-    z_can_top = cyl.z_center_m + cyl.radius_m
+    # The REAL part's rear face, not the void envelope. The envelope is
+    # deliberately taller than the halo so bodywork cannot intrude on the
+    # mount; anchoring the loft on it started the deck at 43.0 mm against a
+    # part whose rear face is flat at 34.0 mm, so the deck floated 9 mm above
+    # the thing it is supposed to leave from. This assertion used to encode
+    # that mistake by reading the mask.
+    from fixed_hardware import HALO_REAR_FACE_TOP_MM, CANISTER_CLEARANCE_RADIUS_MM
+    z_halo_top = HALO_REAR_FACE_TOP_MM / 1000.0
+    z_can_top = cyl.z_center_m + CANISTER_CLEARANCE_RADIUS_MM / 1000.0
     i_can_front = int(round(
         (cyl.x_center_m - cyl.x_half_width_m - geom.region.origin_m[0]) / dz))
 
@@ -227,8 +234,8 @@ def test_the_halo_lofts_to_the_canister():
 
     tol = 1.5 * dz
     assert abs(deck_top(xs[0]) - z_halo_top) <= tol, (
-        f"deck starts at {deck_top(xs[0])*1000:.1f} mm, halo top is "
-        f"{z_halo_top*1000:.1f} mm -- it does not leave from the halo")
+        f"deck starts at {deck_top(xs[0])*1000:.1f} mm, the halo's REAR FACE "
+        f"is at {z_halo_top*1000:.1f} mm -- it does not touch the halo")
     assert abs(deck_top(xs[-1]) - z_can_top) <= tol, (
         f"deck ends at {deck_top(xs[-1])*1000:.1f} mm, canister top is "
         f"{z_can_top*1000:.1f} mm -- it does not arrive at the cartridge")

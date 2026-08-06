@@ -680,6 +680,21 @@ HALO_CROSS_SECTION_TOP_MM: float = 45.0          # conservative; real arch heigh
 # does not carry.
 HALO_VISIBILITY_FILLET_MM: float = 4.0
 
+# Top of the REAL halo at its rear face, measured on hardware_cad/halo_helmet.stl
+# after placement: flat at 34.0 mm across the full +-12.5 mm width.
+#
+# This is NOT HALO_CROSS_SECTION_TOP_MM. That constant is the conservative
+# rectangular ENVELOPE the optimiser may not fill (45 mm nominal, 43 mm once
+# rasterised), deliberately taller than the part so bodywork can never intrude
+# on the mount. The real halo is an arch that tapers 39.0 mm at x=45 down to
+# 34.0 mm at its rear face.
+#
+# The loft has to use the PART, not the envelope. Anchoring it on the envelope
+# started the deck at 43.0 mm -- 9 mm above the halo it is supposed to leave
+# from, floating over it rather than touching it. The envelope stays where it
+# is; only the loft's front anchor moves.
+HALO_REAR_FACE_TOP_MM: float = 34.0
+
 
 def halo_visibility_air_mask(halo_mask: "np.ndarray",
                              z_origin_m: float,
@@ -791,11 +806,13 @@ def _loft_profile(halo_mask, canister_cylinder, x_origin_m: float,
         return None
     i_halo_rear = int(hx[-1])
 
-    # Halo top per y, taken at its rear-most slice: the section the loft leaves.
+    # Halo section the loft leaves from: the REAL part's rear face, which is
+    # flat at HALO_REAR_FACE_TOP_MM across its width. The mask gives the y
+    # extent and the x station; it must NOT give the height, because it is the
+    # conservative envelope and sits 9 mm above the part.
     rear = halo_mask[i_halo_rear]                        # (ny, nz)
     has_halo = rear.any(axis=1)
-    k_last = nz - 1 - _np.argmax(rear[:, ::-1], axis=1)
-    z_halo = _np.where(has_halo, z_origin_m + k_last * d_m, _np.nan)
+    z_halo = _np.where(has_halo, mm_to_m(HALO_REAR_FACE_TOP_MM), _np.nan)
 
     # Cartridge assembly section at the bore front: a circle of the clearance
     # radius, which is the part's flat outer face (see
