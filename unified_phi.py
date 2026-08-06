@@ -756,6 +756,54 @@ def _init_field(phi: PhiGrid, mode: str, seed: int) -> None:
     phi.grid = np.full(phi.bv.shape, -GRID_SPACING_M, dtype=np.float32)
 
 
+def enforce_machinability(geom: "UnifiedGeometry") -> int:
+    """Fill void no tool can reach. Returns how many cells were filled.
+
+    The block is milled from the top, the bottom and the two sides only, so a
+    pocket of air is REAL only if a straight run along +z, -z, +y or -y gets
+    from it to the outside without passing through solid. Anything else is a
+    cavity you would have to machine from inside a closed shell.
+
+    THE FACE GATE DOES NOT CATCH THIS. _check_accessibility ray-casts surface
+    normals, so on the 2026-08-06 car it flagged 239 faces / 96 mm^2 -- and all
+    239 were +-x-facing, i.e. it was reporting "this face points down an axis
+    that has no tool", which is trivially true of every x-normal face and says
+    nothing about whether the shape can be cut. Meanwhile 8,310 air CELLS had
+    no clear run out in any of the four real directions, spanning x 91-204 mm.
+    Two orders of magnitude of unmakeable void, invisible to a normals test.
+
+    So this is a projection applied during the descent, not a gate after it:
+    unreachable void goes back to solid, the optimiser sees the mass it just
+    regained, and carves again from a direction that exists. Same shape of fix
+    as the halo visibility masks -- make the illegal state unrepresentable
+    rather than detectable.
+
+    Hardware voids are exempt. The cartridge bore is drilled along x and the
+    halo pocket is a placed part; neither is milled from +-Y/+-Z and neither
+    should be filled. They live in hard_mask_air, so exempting that covers the
+    bore, the halo pocket, the axle zones, the halo visibility shadow and the
+    loft ceiling in one go.
+    """
+    solid = geom.phi.grid < 0
+
+    def _clear_run(axis: int, positive: bool) -> np.ndarray:
+        """True where no solid lies strictly beyond this cell along the axis."""
+        s = np.flip(solid, axis=axis) if positive else solid
+        acc = np.cumsum(s, axis=axis) - s          # excludes the cell itself
+        return np.flip(acc, axis=axis) == 0 if positive else acc == 0
+
+    reachable = (_clear_run(2, True) | _clear_run(2, False)
+                 | _clear_run(1, True) | _clear_run(1, False))
+    stuck = (~solid) & (~reachable) & (~geom.phi.hard_mask_air)
+    n = int(stuck.sum())
+    if n:
+        # One cell inside the surface, so reinitialisation has a sign to work
+        # with rather than a plateau at exactly zero.
+        geom.phi.grid[stuck] = -GRID_SPACING_M
+        geom.phi.apply_hard_constraints()
+    return n
+
+
 def enforce_symmetry(geom: UnifiedGeometry) -> None:
     """Mirror the right half (y >= 0) onto the left, in place.
 

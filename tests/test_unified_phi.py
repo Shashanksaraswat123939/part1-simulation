@@ -285,6 +285,92 @@ def test_invalid_outer_scalars_raise():
     _pass("test_invalid_outer_scalars_raise")
 
 
+
+
+def test_unreachable_void_is_filled_back_in():
+    """Void a +-Y/+-Z tool cannot reach is not void.
+
+    The block is milled from the top, the bottom and the two sides. A pocket of
+    air is only real if a straight run along one of those four directions gets
+    it to the outside without crossing solid.
+
+    The FACE gate does not catch this. _check_accessibility ray-casts surface
+    normals, and on the 2026-08-06 car it flagged 239 faces / 96 mm^2 of which
+    all 239 were +-x-facing -- it was reporting "this face points down an axis
+    with no tool", trivially true of every x-normal face and silent about
+    whether the shape can be cut. At the same moment 8,310 air CELLS had no
+    clear run out in any real direction, spanning x 91-204 mm. Two orders of
+    magnitude of unmakeable cavity, invisible to a normals test.
+
+    So it is a projection during the descent, not a gate after it. After
+    enforce_machinability the count must be zero, and hardware voids must
+    survive: the cartridge bore is drilled along x and the halo pocket is a
+    placed part, so neither is reachable by a milling cutter and neither should
+    be filled.
+    """
+    import numpy as np
+    from unified_phi import enforce_machinability
+
+    geom = _geom(with_cargo=True)
+    # Carve a sealed cavity: solid everywhere, one interior cell hollowed.
+    geom.phi.grid[:] = -0.002
+    geom.phi.apply_hard_constraints()
+    nx, ny, nz = geom.phi.grid.shape
+    i, j, k = nx // 2, ny // 2, nz // 2
+    geom.phi.grid[i, j, k] = +0.002
+    assert not geom.phi.hard_mask_air[i, j, k], "picked an exempt cell; move it"
+
+    filled = enforce_machinability(geom)
+    assert filled >= 1, "a sealed interior cavity was not filled"
+    assert geom.phi.grid[i, j, k] < 0, (
+        "the sealed cavity is still air -- unmakeable geometry survived")
+
+    # Idempotent, and it must not eat the hardware voids.
+    again = enforce_machinability(geom)
+    assert again == 0, f"not idempotent: {again} more cells filled on a re-run"
+    bore = geom.fixed_hardware.canister_void_mask
+    if bore.any():
+        assert (geom.phi.grid[bore] > 0).all(), (
+            "the cartridge bore was filled in -- it is drilled along x, not "
+            "milled from the sides, and is exempt")
+    _pass("test_unreachable_void_is_filled_back_in")
+
+
+def test_open_pockets_are_left_alone():
+    """The projection must not fill void the tool CAN reach.
+
+    A trench open to the sky is exactly what milling produces; if this fired on
+    it, the optimiser could never remove anything and the car would stay a
+    brick.
+    """
+    import numpy as np
+    from unified_phi import enforce_machinability
+
+    geom = _geom(with_cargo=False)
+    geom.phi.grid[:] = -0.002
+    geom.phi.apply_hard_constraints()
+    nx, ny, nz = geom.phi.grid.shape
+
+    # Pick a column with no forced-solid above it. On the centreline the
+    # halo->canister loft deck caps the trench, so the cells beneath it really
+    # ARE unreachable and filling them is correct -- my first attempt put the
+    # trench there and read the right answer as a bug.
+    solid_above = geom.phi.hard_mask_solid.any(axis=2)         # (nx, ny)
+    cand = np.argwhere(~solid_above)
+    assert len(cand), "no column free of forced-solid to test with"
+    i, j = cand[len(cand) // 2]
+
+    geom.phi.grid[i, j, nz // 2:] = +0.002        # open trench up to the top
+    geom.phi.apply_hard_constraints()
+    before = int((geom.phi.grid > 0).sum())
+    enforce_machinability(geom)
+    after = int((geom.phi.grid > 0).sum())
+    assert after >= before, (
+        f"an open trench at ({i},{j}) lost {before - after} air cells -- the "
+        f"projection is filling void the tool can reach")
+    _pass("test_open_pockets_are_left_alone")
+
+
 if __name__ == "__main__":
     fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
     passed, failed = 0, 0

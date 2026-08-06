@@ -523,7 +523,8 @@ def _level2_evaluate_unified(
     from the locked JAX objective. There is no frontal-area drag stand-in
     anywhere in the physics path -- it was removed on 2026-07-21.
     """
-    from unified_phi import build_unified_geometry, enforce_symmetry
+    from unified_phi import (build_unified_geometry, enforce_symmetry,
+                         enforce_machinability)
     from phi_updater import (
         cfl_limited_dt, hj_update, reinitialise_sdf, scalar_objective_velocity,
     )
@@ -561,6 +562,12 @@ def _level2_evaluate_unified(
         if (it + 1) % 10 == 0:
             reinitialise_sdf(geom.phi)
             enforce_symmetry(geom)
+            # Void the tool cannot reach is not void -- see
+            # unified_phi.enforce_machinability. Applied on the same cadence as
+            # redistancing: the projection only has to hold at the states that
+            # get measured, and running it every step would cost a full pass
+            # over the grid for a change the next HJ step may undo anyway.
+            enforce_machinability(geom)
 
     state = _unified_mass_com_state(geom)
     if state is None:
