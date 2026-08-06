@@ -549,6 +549,7 @@ def build_unified_geometry(
             fixed_hardware.halo_void_mask,
             getattr(fixed_hardware, "canister_cylinder", None),
             x_origin_m=region.origin_m[0],
+            y_origin_m=region.origin_m[1],
             z_origin_m=region.origin_m[2],
             d_m=GRID_SPACING_M,
         )

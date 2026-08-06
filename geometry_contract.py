@@ -202,23 +202,39 @@ ALLOWED_LIFECYCLE_STATES: frozenset[str] = frozenset({
 # CNC-milled, so it has no directional tool-access constraint at all.
 # surface_extraction._check_accessibility already treats a missing/empty
 # entry as "no constraint" (returns 0.0 inaccessible area).
+# The block is machined from the TOP, the BOTTOM, and the two SIDES, and from
+# nowhere else (project owner, 2026-08-06). So the tool set is +-Z and +-Y for
+# every milled component, and there is no +-X access at all.
+#
+# Every entry here was wrong, in both directions:
+#
+#   sidepod   [+Y, -X, +Z]        -X is a cut from the front. Not available.
+#   rearpod   [+X, +Z, +Y, -Y]    +X is a cut from the rear. Not available.
+#   main_body [+Z, +Y, -Y]        no -Z: the bottom was never offered.
+#
+# rearpod's +X is the consequential one. It made every surface reachable by
+# looking straight up the car's axis "accessible", which is what licensed the
+# shroud of material standing around the CO2 cartridge -- geometry you can only
+# get a tool to from behind, i.e. you cannot. And the missing -Z made the gate
+# reject bodywork that a simple flip of the block reaches, so it was
+# simultaneously too permissive about the impossible and too strict about the
+# routine.
+#
+# Kept per-component rather than collapsed to one list: the labels also select
+# density and the gate dispatches per face, so a future component that really
+# does have different access (a printed part, say) still has somewhere to say
+# so. They just all happen to agree today.
+_MILL_TOP_BOTTOM_SIDES: list[tuple[float, float, float]] = [
+    ( 0.0,  0.0,  1.0),      # top
+    ( 0.0,  0.0, -1.0),      # bottom
+    ( 0.0,  1.0,  0.0),      # side +y
+    ( 0.0, -1.0,  0.0),      # side -y
+]
+
 TOOL_DIRECTIONS: dict[str, list[tuple[float, float, float]]] = {
-    "sidepod": [
-        ( 0.0,  1.0,  0.0),
-        (-1.0,  0.0,  0.0),
-        ( 0.0,  0.0,  1.0),
-    ],
-    "rearpod": [
-        ( 1.0,  0.0,  0.0),
-        ( 0.0,  0.0,  1.0),
-        ( 0.0,  1.0,  0.0),
-        ( 0.0, -1.0,  0.0),
-    ],
-    "main_body": [
-        ( 0.0,  0.0,  1.0),
-        ( 0.0,  1.0,  0.0),
-        ( 0.0, -1.0,  0.0),
-    ],
+    "sidepod":   list(_MILL_TOP_BOTTOM_SIDES),
+    "rearpod":   list(_MILL_TOP_BOTTOM_SIDES),
+    "main_body": list(_MILL_TOP_BOTTOM_SIDES),
 }
 
 

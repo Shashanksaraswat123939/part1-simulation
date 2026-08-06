@@ -250,12 +250,12 @@ def test_the_loft_ceiling_and_deck_agree():
     geom = _carved_car(n_iters=0)
     fh = geom.fixed_hardware
     kw = dict(x_origin_m=geom.region.origin_m[0],
+              y_origin_m=geom.region.origin_m[1],
               z_origin_m=geom.region.origin_m[2], d_m=gc.GRID_SPACING_M)
     air = halo_canister_loft_air_mask(fh.halo_void_mask,
                                       fh.canister_cylinder, **kw)
     deck = halo_canister_loft_solid_mask(
-        fh.halo_void_mask, fh.canister_cylinder,
-        y_origin_m=geom.region.origin_m[1], **kw)
+        fh.halo_void_mask, fh.canister_cylinder, **kw)
     overlap = int((air & deck).sum())
     assert overlap == 0, (
         f"{overlap:,} cells are both forced air (above the loft) and forced "

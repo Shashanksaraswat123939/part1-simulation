@@ -201,30 +201,55 @@ def test_min_radius_consistency():
     assert abs(gc.MIN_RADIUS_M - gc.MIN_RADIUS_MM / 1000.0) < 1e-15
     _pass("test_min_radius_consistency")
 
+
+
+def test_machining_is_top_bottom_and_sides_only():
+    """No +-X tool access, and the bottom must be offered.
+
+    The block is machined from the top, the bottom and the two sides (project
+    owner, 2026-08-06). Every entry used to disagree:
+
+        sidepod   [+Y, -X, +Z]        -X is a cut from the front
+        rearpod   [+X, +Z, +Y, -Y]    +X is a cut from the rear
+        main_body [+Z, +Y, -Y]        no -Z at all
+
+    rearpod's +X is the one with teeth: it declared anything reachable straight
+    up the car's axis machinable, which is what let a shroud of material stand
+    around the CO2 cartridge -- geometry a tool can only reach from behind. The
+    missing -Z was the mirror-image error, rejecting bodywork that a flip of
+    the block reaches. Too permissive about the impossible, too strict about
+    the routine.
+    """
+    from geometry_contract import TOOL_DIRECTIONS
+
+    for comp, dirs in TOOL_DIRECTIONS.items():
+        for d in dirs:
+            assert abs(d[0]) < 1e-12, (
+                f"{comp} claims tool access along x ({d}) -- the block is not "
+                f"machined from the front or the rear")
+        got = {tuple(float(c) for c in d) for d in dirs}
+        for need in ((0.0, 0.0, 1.0), (0.0, 0.0, -1.0),
+                     (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
+            assert need in got, f"{comp} is missing tool direction {need}"
+    _pass("test_machining_is_top_bottom_and_sides_only")
+
+
 if __name__ == "__main__":
-    test_co2_mass_matches_part2_constant()
-    test_wheel_constants_match_locked_race_objective()
-    test_nose_density_is_1000()
-    test_nose_density_is_6x_sidepod()
-    test_all_machined_densities_present()
-    test_get_density_unknown_raises()
-    test_mm_to_m_round_trip()
-    test_gcm3_to_kgm3()
-    test_grid_cells_minimum_one()
-    test_W_bounds()
-    test_validate_W_valid()
-    test_validate_W_invalid()
-    test_validate_d_halo_valid()
-    test_validate_d_halo_invalid()
-    test_d_halo_forward_limit_puts_pocket_front_on_the_front_axle()
-    test_d_halo_rear_limit_honours_the_canister_when_supplied()
-    test_calibrate_d_halo_max_scales_with_W()
-    test_halo_z_min()
-    test_lifecycle_states_count()
-    test_lifecycle_states_exact_names()
-    test_tool_directions_all_components()
-    test_tool_directions_unit_vectors()
-    test_phi_snapshot_keys()
-    test_grid_spacing_consistency()
-    test_min_radius_consistency()
-    print("\nAll geometry_contract tests passed.")
+    # Collected BY NAME -- the hand-written list this replaces would have
+    # silently skipped anything added after it was written.
+    import sys as _sys
+    _mod = _sys.modules[__name__]
+    _failed = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        _fn = getattr(_mod, _n)
+        if not callable(_fn):
+            continue
+        try:
+            _fn()
+        except Exception as _exc:  # noqa: BLE001
+            print("FAIL %s: %s" % (_n, _exc))
+            _failed += 1
+    if _failed:
+        print("%d geometry_contract test(s) FAILED." % _failed)
+        _sys.exit(1)
+    print("All geometry_contract tests passed.")

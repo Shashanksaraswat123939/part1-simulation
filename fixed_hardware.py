@@ -761,9 +761,74 @@ def halo_visibility_air_mask(halo_mask: "np.ndarray",
     return out & ~halo_mask
 
 
+
+def _loft_profile(halo_mask, canister_cylinder, x_origin_m: float,
+                  y_origin_m: float, z_origin_m: float, d_m: float):
+    """The loft surface height per (x, y): (i0, i1, z_top[span, ny], valid[ny]).
+
+    The surface INTERPOLATES THE TWO CROSS-SECTIONS IT JOINS -- the halo's top
+    profile at its rear face, and the cartridge assembly's circular profile at
+    the bore front -- rather than sweeping one height across a flat band.
+
+    The first version did the latter: a single z per x applied to a rectangular
+    `|y| <= half_width` strip. On a 1 mm grid that renders as exactly what it
+    is, a slab with a staircase -- flat-topped panels with square shoulders and
+    visible steps, which is what "almost rectangles in the loft" was pointing
+    at. A deck joining a round cartridge to a rounded halo has no business
+    being flat across its width.
+
+    Blending per-y gives the deck a crown that starts as the halo's section and
+    ends as the cartridge's circle, so the top surface curves in BOTH x and y
+    and marching cubes has a smooth field to cut rather than a plateau edge.
+    Restricted to the y range where both profiles exist, which is where a
+    surface between them is defined at all.
+    """
+    import numpy as _np
+
+    nx, ny, nz = halo_mask.shape
+    hx = _np.flatnonzero(halo_mask.any(axis=(1, 2)))
+    if hx.size == 0 or canister_cylinder is None:
+        return None
+    i_halo_rear = int(hx[-1])
+
+    # Halo top per y, taken at its rear-most slice: the section the loft leaves.
+    rear = halo_mask[i_halo_rear]                        # (ny, nz)
+    has_halo = rear.any(axis=1)
+    k_last = nz - 1 - _np.argmax(rear[:, ::-1], axis=1)
+    z_halo = _np.where(has_halo, z_origin_m + k_last * d_m, _np.nan)
+
+    # Cartridge assembly section at the bore front: a circle of the clearance
+    # radius, which is the part's flat outer face (see
+    # CANISTER_CLEARANCE_RADIUS_MM).
+    r_m = mm_to_m(CANISTER_CLEARANCE_RADIUS_MM)
+    ys = y_origin_m + _np.arange(ny) * d_m
+    inside = _np.abs(ys) <= r_m
+    z_can = _np.full(ny, _np.nan)
+    z_can[inside] = canister_cylinder.z_center_m + _np.sqrt(
+        _np.maximum(r_m * r_m - ys[inside] ** 2, 0.0))
+
+    valid = ~_np.isnan(z_halo) & ~_np.isnan(z_can)
+    if not valid.any():
+        return None
+
+    x_can_front_m = (canister_cylinder.x_center_m
+                     - canister_cylinder.x_half_width_m)
+    i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
+    i0, i1 = i_halo_rear, min(i_can_front, nx - 1)
+    if i1 <= i0:
+        return None
+
+    t = (_np.arange(i0, i1 + 1, dtype=_np.float64) - i0) / float(i1 - i0)
+    t = t * t * (3.0 - 2.0 * t)                     # smoothstep, C1 at both ends
+    z_top = (z_halo[None, :]
+             + t[:, None] * (z_can - z_halo)[None, :])
+    return i0, i1, z_top, valid
+
+
 def halo_canister_loft_air_mask(halo_mask: "np.ndarray",
                                 canister_cylinder,
                                 x_origin_m: float,
+                                y_origin_m: float,
                                 z_origin_m: float,
                                 d_m: float) -> "np.ndarray":
     """Cells above the halo->canister loft, which must be AIR.
@@ -799,41 +864,18 @@ def halo_canister_loft_air_mask(halo_mask: "np.ndarray",
     """
     import numpy as _np
 
-    if canister_cylinder is None:
+    prof = _loft_profile(halo_mask, canister_cylinder, x_origin_m,
+                         y_origin_m, z_origin_m, d_m)
+    if prof is None:
         return _np.zeros_like(halo_mask, dtype=bool)
+    i0, i1, z_top, valid = prof
 
-    nx, ny, nz = halo_mask.shape
-    hx = _np.flatnonzero(halo_mask.any(axis=(1, 2)))
-    if hx.size == 0:
-        return _np.zeros_like(halo_mask, dtype=bool)
-
-    # Halo rear face and its top, from the halo's own rasterised extent.
-    i_halo_rear = int(hx[-1])
-    hz = _np.flatnonzero(halo_mask.any(axis=(0, 1)))
-    z_halo_top_m = z_origin_m + float(hz[-1]) * d_m
-
-    # Canister front face and top, from the bore geometry.
-    x_can_front_m = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
-    # Outer face of the cartridge assembly, not the bore: the deck must
-    # arrive at the part's flat surface, which also leaves T5.5's 3 mm of
-    # material above the chamber. See CANISTER_CLEARANCE_RADIUS_MM.
-    z_can_top_m = canister_cylinder.z_center_m + mm_to_m(
-        CANISTER_CLEARANCE_RADIUS_MM)
-    i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
-
-    if i_can_front <= i_halo_rear + 1:
-        # Halo already at its rearward limit against the canister: no span to
-        # loft over. Not an error -- d_halo_max is defined by exactly this.
-        return _np.zeros_like(halo_mask, dtype=bool)
-
+    nz = halo_mask.shape[2]
+    ks = _np.arange(nz)[None, None, :]
+    k_ceil = _np.ceil((z_top - z_origin_m) / d_m)
+    k_ceil = _np.where(valid[None, :], k_ceil, _np.inf)
     out = _np.zeros_like(halo_mask, dtype=bool)
-    ks = _np.arange(nz)[None, :]
-    i0, i1 = i_halo_rear, min(i_can_front, nx - 1)
-    t = (_np.arange(i0, i1 + 1, dtype=_np.float64) - i0) / float(i1 - i0)
-    t = t * t * (3.0 - 2.0 * t)                      # smoothstep, C1 at both ends
-    z_ceiling = z_halo_top_m + t * (z_can_top_m - z_halo_top_m)
-    k_ceiling = _np.ceil((z_ceiling - z_origin_m) / d_m).astype(int)
-    out[i0:i1 + 1] = (ks > k_ceiling[:, None])[:, None, :]
+    out[i0:i1 + 1] = ks > k_ceil[:, :, None]
     return out & ~halo_mask
 
 
@@ -872,50 +914,28 @@ def halo_canister_loft_solid_mask(halo_mask: "np.ndarray",
     """
     import numpy as _np
 
-    if canister_cylinder is None:
+    prof = _loft_profile(halo_mask, canister_cylinder, x_origin_m,
+                         y_origin_m, z_origin_m, d_m)
+    if prof is None:
         return _np.zeros_like(halo_mask, dtype=bool)
-    nx, ny, nz = halo_mask.shape
-    hx = _np.flatnonzero(halo_mask.any(axis=(1, 2)))
-    if hx.size == 0:
-        return _np.zeros_like(halo_mask, dtype=bool)
-
-    i_halo_rear = int(hx[-1])
-    hz = _np.flatnonzero(halo_mask.any(axis=(0, 1)))
-    z_halo_top_m = z_origin_m + float(hz[-1]) * d_m
-    x_can_front_m = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
-    # Outer face of the cartridge assembly, not the bore: the deck must
-    # arrive at the part's flat surface, which also leaves T5.5's 3 mm of
-    # material above the chamber. See CANISTER_CLEARANCE_RADIUS_MM.
-    z_can_top_m = canister_cylinder.z_center_m + mm_to_m(
-        CANISTER_CLEARANCE_RADIUS_MM)
-    i_can_front = int(round((x_can_front_m - x_origin_m) / d_m))
+    i0, i1, z_top, valid = prof
 
     # Start one cell AFT of the halo: over the halo's own footprint T4.4.3
     # forces air, and a deck there would fight the visibility rule.
-    i0 = i_halo_rear + 1
-    i1 = min(i_can_front, nx - 1)
+    i0 = i0 + 1
     if i1 <= i0:
         return _np.zeros_like(halo_mask, dtype=bool)
+    z_top = z_top[1:]
 
-    hy = _np.flatnonzero(halo_mask.any(axis=(0, 2)))
-    y_half_m = max(
-        (float(hy[-1] - hy[0]) * d_m) / 2.0,
-        canister_cylinder.radius_m,
-    )
-    ys = y_origin_m + _np.arange(ny) * d_m
-    in_y = _np.abs(ys) <= y_half_m
-
-    t = (_np.arange(i0, i1 + 1, dtype=_np.float64) - i_halo_rear) / \
-        float(i1 - i_halo_rear)
-    t = t * t * (3.0 - 2.0 * t)
-    z_top = z_halo_top_m + t * (z_can_top_m - z_halo_top_m)
-    k_top = _np.floor((z_top - z_origin_m) / d_m).astype(int)
-    k_bot = k_top - max(int(round(LOFT_SKIN_THICKNESS_MM / (d_m * 1000.0))), 1)
-
-    ks = _np.arange(nz)[None, :]
-    band = (ks <= k_top[:, None]) & (ks > k_bot[:, None])       # (span, nz)
+    nz = halo_mask.shape[2]
+    thick = max(int(round(LOFT_SKIN_THICKNESS_MM / (d_m * 1000.0))), 1)
+    k_top = _np.floor((z_top - z_origin_m) / d_m)
+    k_top = _np.where(valid[None, :], k_top, -1.0)
+    ks = _np.arange(nz)[None, None, :]
     out = _np.zeros_like(halo_mask, dtype=bool)
-    out[i0:i1 + 1] = band[:, None, :] & in_y[None, :, None]
+    out[i0:i1 + 1] = ((ks <= k_top[:, :, None])
+                      & (ks > (k_top - thick)[:, :, None])
+                      & valid[None, :, None])
     return out & ~halo_mask
 
 
