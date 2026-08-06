@@ -696,6 +696,92 @@ HALO_VISIBILITY_FILLET_MM: float = 4.0
 HALO_REAR_FACE_TOP_MM: float = 34.0
 
 
+
+# T7.9 wheel keep-out, measured off the regulation diagram (Tech Regs 2025-26
+# UAE, page 32). Depths are along x from the wheel's own extremity:
+#     T7.9.1  in front of front wheels   5.0 mm
+#     T7.9.2  behind front wheels       15.0 mm   (60 deg chamfer outboard)
+#     T7.9.3  in front of rear wheels    5.0 mm   (45 deg chamfer outboard)
+#     T7.9.4  behind rear wheels         5.0 mm
+T79_AHEAD_OF_FRONT_MM: float = 5.0
+T79_BEHIND_FRONT_MM:   float = 15.0
+T79_AHEAD_OF_REAR_MM:  float = 5.0
+T79_BEHIND_REAR_MM:    float = 5.0
+# "a height from track surface of 65.0mm" -- the zone is full height, not a
+# disc around the wheel.
+T79_ZONE_HEIGHT_MM: float = 65.0
+
+
+def wheel_exclusion_air_mask(region_origin_m, shape, d_m: float,
+                             x_front_m: float, rear_axle_m: float,
+                             wheel_radius_m: float) -> "np.ndarray":
+    """Cells that must be AIR for T7.9 wheel visibility.
+
+    T7.9: "The visibility of all wheels must not be physically obscured by any
+    component of the car in the car's top and bottom elevation views. Car body
+    or any other components must not exist within the dimensions illustrated
+    below. These dimensions must exist FROM THE INSIDE EDGES OF EACH WHEELS'
+    TRACK CONTACT WIDTH TO THE EXTREME WIDTH OF THE CAR ASSEMBLY and A HEIGHT
+    FROM TRACK SURFACE OF 65.0MM."
+
+    What was modelled instead: WheelDiscZone, a disc of wheel-radius + 2 mm
+    clearance in the x-z plane, confined to the wheel's own y band. Three ways
+    short of the rule --
+
+      * laterally it stopped at the wheel's outer face + 2 mm, where the rule
+        runs outboard to the extreme width of the car;
+      * vertically it was a disc about the axle, spanning z 0-32 mm, where the
+        rule is a full-height prism to 65 mm;
+      * longitudinally it was the same +-radius all round, where the rule gives
+        four different depths, 5 / 15 / 5 / 5 mm.
+
+    The disc is a physical clearance volume for the spinning wheel and is still
+    the right shape for THAT job. This is a different constraint that happens
+    to live in the same place, and it is much larger.
+
+    Applied as hard air so no candidate can ever occupy it, rather than as a
+    gate that rejects a finished car -- same reasoning as the halo visibility
+    masks.
+
+    CONSERVATIVE ON THE CHAMFERS. T7.9.2 and T7.9.3 taper outboard (60 deg and
+    45 deg on the diagram), which RELEASES keep-out volume the further out you
+    go. Modelled here as the full un-chamfered prism, so the constraint is
+    stricter than the rule, never looser. That costs some legal design space
+    outboard and is the safe direction to be wrong in; tightening it to the
+    true chamfer needs the diagram's datum confirmed.
+    """
+    import numpy as _np
+    from geometry_contract import (
+        FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M,
+    )
+
+    o = _np.asarray(region_origin_m, dtype=float)
+    nx, ny, nz = shape
+    xs = o[0] + _np.arange(nx) * d_m
+    ys = o[1] + _np.arange(ny) * d_m
+    zs = o[2] + _np.arange(nz) * d_m
+
+    in_z = zs <= mm_to_m(T79_ZONE_HEIGHT_MM)
+    out = _np.zeros(shape, dtype=bool)
+
+    for axle_m, inner_y_m, ahead_mm, behind_mm in (
+        (x_front_m, FRONT_WHEEL_INNER_Y_M,
+         T79_AHEAD_OF_FRONT_MM, T79_BEHIND_FRONT_MM),
+        (rear_axle_m, REAR_WHEEL_INNER_Y_M,
+         T79_AHEAD_OF_REAR_MM, T79_BEHIND_REAR_MM),
+    ):
+        # The wheel's own plan footprint is included: body directly above or
+        # below a wheel obscures it in exactly the views T7.9 names.
+        x_lo = axle_m - wheel_radius_m - mm_to_m(ahead_mm)
+        x_hi = axle_m + wheel_radius_m + mm_to_m(behind_mm)
+        in_x = (xs >= x_lo) & (xs <= x_hi)
+        # From the INNER edge of track contact, outboard. Both sides.
+        in_y = _np.abs(ys) >= inner_y_m
+        out |= (in_x[:, None, None] & in_y[None, :, None]
+                & in_z[None, None, :])
+    return out
+
+
 def halo_visibility_air_mask(halo_mask: "np.ndarray",
                              z_origin_m: float,
                              dz_m: float) -> "np.ndarray":

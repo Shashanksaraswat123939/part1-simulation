@@ -544,6 +544,19 @@ def build_unified_geometry(
         # aft of the halo the field filled to the envelope roof and left a
         # 28 mm cliff behind the halo. The loft is a ceiling, not a shape --
         # the optimiser still chooses everything under it.
+        # T7.9: no bodywork outboard of either wheel's inner track-contact
+        # edge, full height to 65 mm, for 5/15/5/5 mm fore and aft. This is
+        # NOT the WheelDiscZone -- that is the spinning wheel's own clearance
+        # volume, a disc about the axle confined to the wheel's y band, and it
+        # is far smaller than the rule in all three axes.
+        from fixed_hardware import wheel_exclusion_air_mask
+        hard_air |= wheel_exclusion_air_mask(
+            region.origin_m, region.shape, GRID_SPACING_M,
+            x_front_m=mm_to_m(x_front_mm),
+            rear_axle_m=mm_to_m(x_front_mm + W_mm),
+            wheel_radius_m=R_WHEEL_M,
+        )
+
         from fixed_hardware import halo_canister_loft_air_mask
         hard_air |= halo_canister_loft_air_mask(
             fixed_hardware.halo_void_mask,
