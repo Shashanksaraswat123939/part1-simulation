@@ -142,6 +142,7 @@ class FixedHardwareResult:
     # Part 2 interface
     fixed_hardware_spec: FixedHardwareSpec
 
+
 def _validate_halo_position(
     halo: HaloGeometry,
     canister_x_m: float,
@@ -656,8 +657,36 @@ REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 # (6/11 - 1/2)*W = 5.5 mm too far forward at W=120. That does not change the
 # optimisation (the COM terms are ~0.2% of the shape velocity, measured), but
 # check_stability ranks on com_x and the deliverable reports it.
-WHEEL_AXLE_FRONT_MASS_KG: float = 0.005    # measured, both front wheels + supports
-WHEEL_AXLE_REAR_MASS_KG: float = 0.006     # measured, both rear wheels + supports
+# ── hardware masses, from CAD volume x density x infill ─────────────────────
+# Infill confirmed by the project owner 2026-08-07: wheels and wheel support
+# systems 100%, halo 20%. With that, mass is just volume x density and the
+# supplied meshes are all watertight single bodies, so their volumes mean
+# something:
+#
+#   front_wheel.stl          1.262 cm3 x 1.04 ABS   x 100%  =  1.312 g  x2
+#   front_wheel_support.stl  8.764 cm3 x 1.04 ABS   x 100%  =  9.115 g  x2
+#   rear_wheel.stl           1.118 cm3 x 1.04 ABS   x 100%  =  1.163 g  x2
+#   rear_wheel_support.stl   8.872 cm3 x 1.04 ABS   x 100%  =  9.227 g  x2
+#   halo_helmet.stl          6.705 cm3 x 0.80 LWPLA x  20%  =  1.073 g
+#
+# !! THIS IS A +28.7 g CHANGE AND IT NEARLY EXHAUSTS THE T3.6 FLOOR ON ITS OWN.
+# !! Fixed hardware goes 14.0 g -> 42.71 g. Add the 5 g rear-wing placeholder
+# !! and it is 47.71 g against a 48 g competition minimum, leaving ~0.3 g for
+# !! the machined body. The optimiser will duly carve the body to nothing,
+# !! because that is what the numbers now say is legal.
+#
+# The four supports alone come to 36.7 g of solid ABS. For context a whole
+# F1-in-Schools car is typically 50-60 g with the body the bulk of it, so a
+# support set outweighing the entire rest of the car is the sort of number that
+# usually means the STL is a clearance/assembly ENVELOPE rather than the printed
+# strut -- 8.76 cm3 is 38% of its own bounding box. The old 5 g/6 g constants
+# were described as measured, and 5 g for two wheels plus two supports is what a
+# real bracket set weighs.
+#
+# Applied as instructed, with the consequence stated rather than buried. If the
+# body wants to carve to zero on the next run, this is why.
+WHEEL_AXLE_FRONT_MASS_KG: float = 0.02085    # measured, both front wheels + supports
+WHEEL_AXLE_REAR_MASS_KG: float = 0.02078     # measured, both rear wheels + supports
 WHEEL_AXLE_MASS_KG: float = (
     WHEEL_AXLE_FRONT_MASS_KG + WHEEL_AXLE_REAR_MASS_KG)   # 11 g, was a 15 g guess
 
@@ -696,7 +725,42 @@ CANISTER_CO2_DENSITY_G_CM3:   float = 0.70    # charged CO2
 CANISTER_STEEL_MASS_KG: float = 0.01525
 CANISTER_CO2_MASS_KG:   float = 0.00797
 
-HALO_MASS_KG: float = 0.003
+HALO_MASS_KG: float = 0.00107
+
+# T3.6's competition minimum is 48 g EXCLUDING the cartridge, and it is met by
+# machined body + fixed hardware. If the hardware alone approaches it there is
+# nothing left for the body to be, and the optimiser will carve to nothing while
+# every mass check still passes -- a legal car made of almost no car. Warn once
+# at import rather than let that happen quietly.
+T36_COMPETITION_FLOOR_KG: float = 0.048
+_MIN_BODY_HEADROOM_KG: float = 0.005      # 5 g: below this the body is a shell
+
+
+def fixed_hardware_total_kg() -> float:
+    """Every non-cartridge fixed part that counts toward T3.6."""
+    return (WHEEL_AXLE_FRONT_MASS_KG + WHEEL_AXLE_REAR_MASS_KG
+            + HALO_MASS_KG + REAR_WING_MASS_KG)
+
+
+def _warn_if_hardware_eats_the_floor() -> None:
+    import warnings as _w
+    hw = fixed_hardware_total_kg()
+    headroom = T36_COMPETITION_FLOOR_KG - hw
+    if headroom < _MIN_BODY_HEADROOM_KG:
+        _w.warn(
+            f"fixed hardware alone is {hw*1000:.2f} g against T3.6's "
+            f"{T36_COMPETITION_FLOOR_KG*1000:.0f} g competition floor, leaving "
+            f"only {headroom*1000:.2f} g for the machined body. The optimiser "
+            f"will carve the body away and still pass every mass check. The "
+            f"four wheel supports are {2*9.115+2*9.227:.1f} g of solid ABS on "
+            f"their own -- check whether those STLs are the printed struts or "
+            f"assembly envelopes before trusting a run.",
+            RuntimeWarning, stacklevel=2)
+
+
+_warn_if_hardware_eats_the_floor()
+
+
 
 # Halo cross-section (U1): the real halo is a downloadable fixed CAD part
 # (T4.4.1) with a curved bar profile, not a constant extruded cross-section.
@@ -820,8 +884,16 @@ def canister_safety_zone_solid_mask(canister_cylinder,
     # Same 3.0 mm as the walls, and the same two-cell floor so it survives
     # coarse spacings. Full disc, not an annulus: the bore's floor spans the
     # whole chamber cross-section.
+    # Stop a FULL CELL short of the bore. The bore's analytic start rarely lands
+    # on a cell boundary, so `xs < x0` still claims the cell that CONTAINS x0 --
+    # measured at 2 mm spacing the cap took cell 92 (centre 184.0) while the bore
+    # began at 184.1, blocking the chamber's first 2 mm of depth. The bore's own
+    # void mask does not cover that cell either (its centre is forward of x0), so
+    # hard_air never wins it back. T5.3 measures depth "from the opening to the
+    # chamber end" and a cap eating into it makes the chamber shallower than the
+    # number the model claims.
     cap_m = max(mm_to_m(CANISTER_SAFETY_ZONE_WALL_MM), 2.0 * d_m)
-    in_cap_x = (xs >= x0 - cap_m) & (xs < x0)
+    in_cap_x = (xs >= x0 - cap_m - d_m) & (xs <= x0 - d_m)
     out |= in_cap_x[:, None, None] & (r <= outer_m)[None, :, :]
     return out
 

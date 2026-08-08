@@ -131,7 +131,14 @@ def test_cartridge_bore_is_carved_and_open_at_the_rear():
         "bore stops short of the rear face -- cartridge cannot be inserted"
     # And it must actually be air in the field, along its whole length.
     air = g.phi.grid > 0
-    i0 = int(round((cyl.x_min_m - g.region.origin_m[0]) / GRID_SPACING_M))
+    # CEIL, not round: the first cell whose CENTRE is inside the bore. The bore's
+    # analytic start rarely lands on a cell boundary, and round() picks the cell
+    # containing it -- whose centre can be forward of the bore and therefore not
+    # part of it, nor of any mask. Caught when R_WHEEL_M went 15.00 -> 14.13 mm
+    # and shifted the bore 0.87 mm across a cell centre: cell 92 sat at 184.0
+    # against a bore starting at 184.1, and the test read an uncarved cell as a
+    # blocked chamber.
+    i0 = int(np.ceil((cyl.x_min_m - g.region.origin_m[0]) / GRID_SPACING_M))
     i1 = min(int(round((cyl.x_max_m - g.region.origin_m[0]) / GRID_SPACING_M)),
              g.shape[0] - 1)
     j = g.shape[1] // 2

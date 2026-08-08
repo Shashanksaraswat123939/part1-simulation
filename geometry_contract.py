@@ -115,7 +115,11 @@ CO2_MASS_KG: float = 0.023
 # ── Wheel / axle geometry ──────────────────────────────────────────────────
 # These must match race_objective.py's locked constants (N_WHEELS=4, R_WHEEL=0.015).
 N_WHEELS:  int   = 4
-R_WHEEL_M: float = 0.015          # 15 mm radius
+# 14.13 mm, measured on hardware_cad/front_wheel.stl: 28.26 mm across, inside
+# T7.5's 28.0-32.0 mm. Was 0.015, a round number nobody had checked against
+# the part, and 0.87 mm too big -- it set the axle height, the wheel-disc
+# clearance cylinders and the T7.9 zone extents, all slightly wide.
+R_WHEEL_M: float = 0.01413        # 14.13 mm radius, measured
 
 # ── Halo rules (CONFIRMED by project owner) ────────────────────────────────
 HALO_MIN_Z_MM: float = 24.0       # 24 mm above track — confirmed rule
