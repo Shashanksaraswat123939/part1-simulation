@@ -192,10 +192,16 @@ def place_supports(W_mm: float, x_front_mm: float) -> dict:
         mesh = _load(name)
         lo, hi = mesh.bounds
         base = mesh.copy()
+        # z is NOT placed. The CAD already has the support 1.5 mm off the track
+        # with its axle exactly on the wheel centre -- wheel z[0.0, 28.2],
+        # centre 14.13; support z[1.5, 26.8], axle 14.15. Dropping its bbox to
+        # z=0 (which is what `-lo[2]` did) shoved the axle down to 12.62 mm,
+        # 1.50 mm below the wheel it is supposed to carry. The bracket does not
+        # sit on the track; only the wheel does.
         base.apply_translation([
             x_m - (lo[0] + hi[0]) / 2.0,  # x centre -> axle line
             0.0,                          # y: CAD is already centreline-to-wheel
-            -lo[2],                       # bottom -> ground
+            0.0,                          # z: keep the CAD's own axle height
         ])
         # CAD half lies on -y, so that instance IS the left one; mirror for +y.
         out[f"support_{axle}_left"] = base
