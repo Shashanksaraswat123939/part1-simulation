@@ -597,7 +597,12 @@ def place_fixed_hardware(
 # ============================================================================
 
 # Cartridge chamber / CO2 canister (T5.1-T5.6)
-CANISTER_DIAMETER_MM: float = 18.25    # T5.1: 18.0-18.5mm, midpoint
+# T5.1 allows 18.0-18.5 mm. Take 18.0, the MINIMUM, because that is what the
+# supplied hardware_cad/canister_safety_zone.stl is drawn for: inner r 9.000,
+# outer r 12.000. At the old 18.25 midpoint the wall came out 12.000 - 9.125 =
+# 2.875 mm, under T5.5's 3.0 mm minimum -- the chamber and its safety zone have
+# to be sized together, and the part is the authority on both.
+CANISTER_DIAMETER_MM: float = 18.0
 CANISTER_DEPTH_MM: float = 50.0        # T5.3: 45.0-58.0mm
 CANISTER_Z_MM: float = 35.0            # T5.2: 30.0-40.0mm, midpoint (rear-centre height)
 # T5.5: min 3.0mm wall of Model Block material around the chamber.
@@ -626,7 +631,13 @@ CANISTER_SAFETY_ZONE_MM: float = 3.0   # ! UNCHECKED -- see note above
 # here rather than on the bore puts the deck at z = 47.1 mm instead of 44.1 mm,
 # which is the cartridge's flat outer face -- and leaves exactly the 3 mm of
 # material above the bore that T5.5 asks for.
-CANISTER_CLEARANCE_RADIUS_MM: float = CANISTER_DIAMETER_MM / 2.0 + CANISTER_SAFETY_ZONE_MM
+# Measured on hardware_cad/canister_safety_zone.stl: a tube, inner r 9.000,
+# outer r 12.000, 48 mm long. Wall exactly 3.000 mm (T5.5) and bore exactly
+# 18.0 mm (T5.1 minimum). Was derived as bore/2 + safety zone = 12.125; the
+# supplied part says 12.000, so take the part.
+CANISTER_CLEARANCE_RADIUS_MM: float = 12.0
+CANISTER_SAFETY_ZONE_INNER_R_MM: float = 9.0
+CANISTER_SAFETY_ZONE_LENGTH_MM: float = 48.0
 
 # Rear wing (T9.4, T9.5) -- mass and COM height are not given by the regs at all;
 # these are placeholders pending a real measured rear wing.
@@ -656,6 +667,32 @@ WHEEL_AXLE_MASS_KG: float = (
 # (bayesian_outer_search.STUB_HALO_MASS_KG = 8 g), so the two stages disagreed:
 # Stage 1 ranked (W, x_front) with an 8 g halo and Stage 2 computed race times
 # with none.
+# ── material densities (project owner, 2026-08-07) ───────────────────────────
+# Recorded because COM wants a density per component, not just a lump mass.
+#
+# !! THESE DISAGREE WITH THE MEASURED MASSES BY ~4x AND ARE NOT YET USED FOR
+# !! MASS. Volume x density on the supplied CAD gives:
+#       front pair (2 wheels + 2 supports)  20.85 g  vs WHEEL_AXLE_FRONT 5 g
+#       rear  pair                          20.78 g  vs WHEEL_AXLE_REAR  6 g
+#       halo                                 5.36 g  vs HALO_MASS        3 g
+# The supports dominate: 8.76 cm3 each, 38% of their own bounding box, i.e. the
+# STL is a solid envelope rather than a printed strut with infill. Switching the
+# mass model to density x solid volume would add ~31 g to a car sitting exactly
+# on the 48 g T3.6 floor, on an assumption nobody has checked -- so the measured
+# masses still set the magnitudes and these set nothing yet. Resolve by either
+# measuring the printed parts' real infill or exporting the true printed solid.
+WHEEL_SUPPORT_DENSITY_G_CM3: float = 1.04     # ABS
+HALO_DENSITY_G_CM3:          float = 0.80     # LW-PLA, foamed; varies with print
+CANISTER_STEEL_DENSITY_G_CM3: float = 7.85    # steel
+CANISTER_CO2_DENSITY_G_CM3:   float = 0.70    # charged CO2
+# Cartridge, from hardware_cad/: canister_steel.stl is a 1.943 cm3 shell and
+# canister_co2_charge.stl an 11.380 cm3 charge, giving 15.25 g + 7.97 g =
+# 23.22 g. That lands the CO2 on its nominal 8 g and the total within 1% of
+# geometry_contract.CO2_MASS_KG (23 g), which is three independent checks that
+# the two files are the right way round -- they arrived swapped.
+CANISTER_STEEL_MASS_KG: float = 0.01525
+CANISTER_CO2_MASS_KG:   float = 0.00797
+
 HALO_MASS_KG: float = 0.003
 
 # Halo cross-section (U1): the real halo is a downloadable fixed CAD part
@@ -697,89 +734,78 @@ HALO_REAR_FACE_TOP_MM: float = 34.0
 
 
 
-# T7.9 wheel keep-out, measured off the regulation diagram (Tech Regs 2025-26
-# UAE, page 32). Depths are along x from the wheel's own extremity:
-#     T7.9.1  in front of front wheels   5.0 mm
-#     T7.9.2  behind front wheels       15.0 mm   (60 deg chamfer outboard)
-#     T7.9.3  in front of rear wheels    5.0 mm   (45 deg chamfer outboard)
-#     T7.9.4  behind rear wheels         5.0 mm
-T79_AHEAD_OF_FRONT_MM: float = 5.0
-T79_BEHIND_FRONT_MM:   float = 15.0
-T79_AHEAD_OF_REAR_MM:  float = 5.0
-T79_BEHIND_REAR_MM:    float = 5.0
-# "a height from track surface of 65.0mm" -- the zone is full height, not a
-# disc around the wheel.
-T79_ZONE_HEIGHT_MM: float = 65.0
+# T7.9 is implemented in wheel_visibility_zones.build_t79_forbidden_mask and has
+# been all along -- applied as hard air per component from unified_phi, with the
+# diagram's chamfers as proper right triangles. A second, cruder copy briefly
+# lived here (2026-08-07): un-chamfered full prisms, added after reading T7.9 out
+# of the PDF without checking whether the rule was already modelled. It was, and
+# the existing one is more faithful.
+#
+# Measured on the carved car with the duplicate removed: the REAL zones contain
+# 0 body cells, while the prism version flagged 1,786 -- every one of them at
+# x 60-66, |y| 20-31 mm, i.e. inside the chamfer T7.9.2 explicitly releases. The
+# duplicate was not stricter in a useful way, it was wrong about the rule.
+#
+# The commit that added it (4bf3071) also claimed WheelDiscZone was the only
+# wheel model and was "short of the rule in all three axes". WheelDiscZone is the
+# spinning wheel's physical clearance volume and was never meant to be T7.9.
 
 
-def wheel_exclusion_air_mask(region_origin_m, shape, d_m: float,
-                             x_front_m: float, rear_axle_m: float,
-                             wheel_radius_m: float) -> "np.ndarray":
-    """Cells that must be AIR for T7.9 wheel visibility.
+def canister_safety_zone_solid_mask(canister_cylinder,
+                                    region_origin_m, shape,
+                                    d_m: float) -> "np.ndarray":
+    """The T5.5 safety zone: model block that MUST remain, as a solid mask.
 
-    T7.9: "The visibility of all wheels must not be physically obscured by any
-    component of the car in the car's top and bottom elevation views. Car body
-    or any other components must not exist within the dimensions illustrated
-    below. These dimensions must exist FROM THE INSIDE EDGES OF EACH WHEELS'
-    TRACK CONTACT WIDTH TO THE EXTREME WIDTH OF THE CAR ASSEMBLY and A HEIGHT
-    FROM TRACK SURFACE OF 65.0MM."
+    T5.5: "A safety zone of STEM Racing Model Block material with a minimum
+    thickness of 3.0mm must be maintained around the minimum chamber depth."
+    Material, not void -- and nothing required it, so the optimiser carved it
+    away. Measured on the 2026-08-06 car the bodywork's top on the centreline
+    sat at 22.5 mm behind the bore while the pocket's outer surface is at
+    47.0 mm: the cartridge floating in a 24.5 mm gap, which is neither
+    machinable nor able to hold a cartridge.
 
-    What was modelled instead: WheelDiscZone, a disc of wheel-radius + 2 mm
-    clearance in the x-z plane, confined to the wheel's own y band. Three ways
-    short of the rule --
+    Geometry is the supplied hardware_cad/canister_safety_zone.stl: a tube,
+    inner r 9.000, outer r 12.000, 48 mm long, coaxial with the bore. Sizing the
+    chamber to T5.1's 18.0 mm minimum rather than the 18.25 midpoint is what
+    makes those two agree -- at 18.25 the wall is 2.875 mm, under T5.5.
 
-      * laterally it stopped at the wheel's outer face + 2 mm, where the rule
-        runs outboard to the extreme width of the car;
-      * vertically it was a disc about the axle, spanning z 0-32 mm, where the
-        rule is a full-height prism to 65 mm;
-      * longitudinally it was the same +-radius all round, where the rule gives
-        four different depths, 5 / 15 / 5 / 5 mm.
-
-    The disc is a physical clearance volume for the spinning wheel and is still
-    the right shape for THAT job. This is a different constraint that happens
-    to live in the same place, and it is much larger.
-
-    Applied as hard air so no candidate can ever occupy it, rather than as a
-    gate that rejects a finished car -- same reasoning as the halo visibility
-    masks.
-
-    CONSERVATIVE ON THE CHAMFERS. T7.9.2 and T7.9.3 taper outboard (60 deg and
-    45 deg on the diagram), which RELEASES keep-out volume the further out you
-    go. Modelled here as the full un-chamfered prism, so the constraint is
-    stricter than the rule, never looser. That costs some legal design space
-    outboard and is the safe direction to be wrong in; tightening it to the
-    true chamfer needs the diagram's datum confirmed.
+    The zone is model block, the same foam the body is milled from, so it
+    carries NO separate mass: it is already inside the body's own volume and
+    density (project owner, 2026-08-07). This mask only says it must be there.
     """
     import numpy as _np
-    from geometry_contract import (
-        FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M,
-    )
 
+    if canister_cylinder is None:
+        return _np.zeros(shape, dtype=bool)
     o = _np.asarray(region_origin_m, dtype=float)
     nx, ny, nz = shape
     xs = o[0] + _np.arange(nx) * d_m
     ys = o[1] + _np.arange(ny) * d_m
     zs = o[2] + _np.arange(nz) * d_m
 
-    in_z = zs <= mm_to_m(T79_ZONE_HEIGHT_MM)
-    out = _np.zeros(shape, dtype=bool)
+    x0 = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
+    in_x = (xs >= x0) & (xs <= x0 + mm_to_m(CANISTER_SAFETY_ZONE_LENGTH_MM))
+    r = _np.sqrt((ys[:, None] - canister_cylinder.y_center_m) ** 2
+                 + (zs[None, :] - canister_cylinder.z_center_m) ** 2)
 
-    for axle_m, inner_y_m, ahead_mm, behind_mm in (
-        (x_front_m, FRONT_WHEEL_INNER_Y_M,
-         T79_AHEAD_OF_FRONT_MM, T79_BEHIND_FRONT_MM),
-        (rear_axle_m, REAR_WHEEL_INNER_Y_M,
-         T79_AHEAD_OF_REAR_MM, T79_BEHIND_REAR_MM),
-    ):
-        # The wheel's own plan footprint is included: body directly above or
-        # below a wheel obscures it in exactly the views T7.9 names.
-        x_lo = axle_m - wheel_radius_m - mm_to_m(ahead_mm)
-        x_hi = axle_m + wheel_radius_m + mm_to_m(behind_mm)
-        in_x = (xs >= x_lo) & (xs <= x_hi)
-        # From the INNER edge of track contact, outboard. Both sides.
-        in_y = _np.abs(ys) >= inner_y_m
-        out |= (in_x[:, None, None] & in_y[None, :, None]
-                & in_z[None, None, :])
-    return out
+    # Inner radius is the BORE's own, so the ring and the void abut exactly.
+    # Ringing from the part's nominal 9.000 while the bore was 9.125 put that
+    # band inside the void, and hard_solid &= ~hard_air subtracted it: measured
+    # 1,250 cells punched out, leaving the zone 82% solid and the bodywork
+    # still not meeting the pocket.
+    inner_m = max(float(canister_cylinder.radius_m),
+                  mm_to_m(CANISTER_SAFETY_ZONE_INNER_R_MM))
+
+    # At least two cells thick, whatever the spacing. The real wall is 3.0 mm --
+    # 6 cells at the 0.5 mm production spacing, but exactly 1.0 cell at 3 mm and
+    # 1.5 at 2 mm, and a one-cell shell in a level set is a sliver farm.
+    # Measured at 3 mm it drove marching cubes to a 0.4 deg minimum angle and
+    # failed the snappyHexMesh gate outright. Widening OUTWARD keeps the bore
+    # exact (T5.1) and only ever adds material (T5.5-safe); it is a no-op at
+    # 1.0 mm and below, where 3.0 mm already spans three cells.
+    outer_m = max(mm_to_m(CANISTER_CLEARANCE_RADIUS_MM), inner_m + 2.0 * d_m)
+    ring = (r >= inner_m) & (r <= outer_m)
+    return in_x[:, None, None] & ring[None, :, :]
 
 
 def halo_visibility_air_mask(halo_mask: "np.ndarray",
@@ -993,7 +1019,13 @@ def halo_canister_loft_air_mask(halo_mask: "np.ndarray",
     # the parts' width, so continuing the curve past them would be inventing a
     # surface. Holding it flat bounds the roof without prescribing the flanks,
     # and the optimiser still chooses everything below.
-    crown = _np.where(valid[None, :], k_ceil, _np.inf).min(axis=1)   # (span,)
+    # MAX over y, not min. The profile is an arch: highest on the centreline,
+    # falling away to the part's edge. Taking the minimum picked the LOWEST
+    # point of that arch and clamped the whole roof to it -- measured at
+    # x=180 it forced air from z=45 up, against a centreline crown of 47.1,
+    # which sheared the top off the cartridge pocket and left the loft hanging
+    # 21.5 mm clear of it. The crown is the peak.
+    crown = _np.where(valid[None, :], k_ceil, -_np.inf).max(axis=1)   # (span,)
     full = _np.repeat(crown[:, None], ny, axis=1)
     k_ceil = _np.where(valid[None, :], k_ceil, full)
 

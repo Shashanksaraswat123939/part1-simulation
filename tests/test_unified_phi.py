@@ -188,10 +188,12 @@ def test_no_attachment_strips_are_needed():
     neighbouring face to keep the assembly connected. With one field that
     crutch is gone, and it must stay gone.
 
-    Forced-solid is now exactly two things, both SPECIFIED rather than
-    structural: the T4.2 cargo, and the halo->canister loft deck (this
-    module's own header: "the continuous top surface running from the
-    cartridge chamber at the rear, forward over the halo mount"). This used to
+    Forced-solid is now exactly three things, all SPECIFIED rather than
+    structural: the T4.2 cargo, the halo->canister loft deck (this module's
+    own header: "the continuous top surface running from the cartridge
+    chamber at the rear, forward over the halo mount"), and T5.5's cartridge
+    safety zone ("a safety zone of STEM Racing Model Block material with a
+    minimum thickness of 3.0mm"). This used to
     assert hard_solid was empty without cargo, which also happened to catch
     attachment strips -- but that stopped being the right test the moment a
     second legitimate forced region existed. Assert the COMPOSITION instead, so
@@ -213,12 +215,20 @@ def test_no_attachment_strips_are_needed():
     )
     assert loft.any(), "the loft deck is empty -- it must span halo to canister"
 
+    from fixed_hardware import canister_safety_zone_solid_mask
+    zone = canister_safety_zone_solid_mask(
+        getattr(fh, "canister_cylinder", None),
+        without.region.origin_m, without.region.shape, gc.GRID_SPACING_M,
+    )
+    assert zone.any(), "the T5.5 safety zone is empty"
+
     # Mirrored onto the left half by build_unified_geometry, so mirror here too.
     loft = loft | loft[:, ::-1, :]
-    residue = without.phi.hard_mask_solid & ~loft
+    residue = without.phi.hard_mask_solid & ~loft & ~zone
     assert int(residue.sum()) == 0, (
-        f"{int(residue.sum()):,} cells are forced solid that are neither cargo "
-        f"nor the halo-canister loft -- an attachment strip has come back")
+        f"{int(residue.sum()):,} cells are forced solid that are none of cargo, "
+        f"the halo-canister loft or the T5.5 safety zone -- an attachment strip "
+        f"has come back")
     assert int(with_cargo.phi.hard_mask_solid.sum()) > \
         int(without.phi.hard_mask_solid.sum()), "cargo forces nothing solid"
     _pass("test_no_attachment_strips_are_needed")
