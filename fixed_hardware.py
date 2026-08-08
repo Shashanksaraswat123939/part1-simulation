@@ -638,6 +638,9 @@ CANISTER_SAFETY_ZONE_MM: float = 3.0   # ! UNCHECKED -- see note above
 CANISTER_CLEARANCE_RADIUS_MM: float = 12.0
 CANISTER_SAFETY_ZONE_INNER_R_MM: float = 9.0
 CANISTER_SAFETY_ZONE_LENGTH_MM: float = 48.0
+# Wall/floor thickness of the zone, T5.5's minimum and what the supplied
+# part is drawn to (12.000 - 9.000).
+CANISTER_SAFETY_ZONE_WALL_MM: float = 3.0
 
 # Rear wing (T9.4, T9.5) -- mass and COM height are not given by the regs at all;
 # these are placeholders pending a real measured rear wing.
@@ -805,7 +808,22 @@ def canister_safety_zone_solid_mask(canister_cylinder,
     # 1.0 mm and below, where 3.0 mm already spans three cells.
     outer_m = max(mm_to_m(CANISTER_CLEARANCE_RADIUS_MM), inner_m + 2.0 * d_m)
     ring = (r >= inner_m) & (r <= outer_m)
-    return in_x[:, None, None] & ring[None, :, :]
+    out = in_x[:, None, None] & ring[None, :, :]
+
+    # END CAP. The zone is "around the minimum chamber depth", and a hole has a
+    # floor as well as walls -- the wall annulus alone leaves nothing behind the
+    # end of the bore. Measured on the 2026-08-07 car, a void sat immediately
+    # forward of the chamber: at x=162 the centreline was air from z=30 to 39,
+    # ten cells of nothing between the bodywork and the back of the pocket.
+    # A cartridge pushed home would bottom out against a shell.
+    #
+    # Same 3.0 mm as the walls, and the same two-cell floor so it survives
+    # coarse spacings. Full disc, not an annulus: the bore's floor spans the
+    # whole chamber cross-section.
+    cap_m = max(mm_to_m(CANISTER_SAFETY_ZONE_WALL_MM), 2.0 * d_m)
+    in_cap_x = (xs >= x0 - cap_m) & (xs < x0)
+    out |= in_cap_x[:, None, None] & (r <= outer_m)[None, :, :]
+    return out
 
 
 def halo_visibility_air_mask(halo_mask: "np.ndarray",
