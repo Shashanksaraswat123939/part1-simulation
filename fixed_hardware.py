@@ -826,6 +826,57 @@ def canister_safety_zone_solid_mask(canister_cylinder,
     return out
 
 
+
+def canister_zone_contact_shell_mask(canister_cylinder,
+                                     region_origin_m, shape,
+                                     d_m: float) -> "np.ndarray":
+    """Bodywork that must be SOLID immediately outside the safety zone.
+
+    The zone itself is void in phi (its own mass component -- see
+    canister_safety_zone_solid_mask). Carving it out removes the body's only
+    reason to be there, though: measured the moment the zone went from forced
+    solid to forced air, the bodywork's top on the centreline fell from 46.5 mm
+    to 19.5 mm against a zone surface at 47.0. The pocket went straight back to
+    floating in air, which is the thing that started all of this.
+
+    So the zone is excluded from the body's VOLUME but the body is required to
+    MEET it: a shell two cells thick wrapped around r = 12 mm, over the zone's
+    length and its end cap. Two cells rather than a fixed thickness for the same
+    reason as the zone's own wall -- a one-cell shell is a sliver farm at coarse
+    spacings.
+
+    This is the difference between "the foam is not counted twice" and "there is
+    no foam there". Only the first is wanted.
+    """
+    import numpy as _np
+
+    if canister_cylinder is None:
+        return _np.zeros(shape, dtype=bool)
+    o = _np.asarray(region_origin_m, dtype=float)
+    nx, ny, nz = shape
+    xs = o[0] + _np.arange(nx) * d_m
+    ys = o[1] + _np.arange(ny) * d_m
+    zs = o[2] + _np.arange(nz) * d_m
+
+    x0 = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
+    inner_m = max(float(canister_cylinder.radius_m),
+                  mm_to_m(CANISTER_SAFETY_ZONE_INNER_R_MM))
+    zone_outer_m = max(mm_to_m(CANISTER_CLEARANCE_RADIUS_MM), inner_m + 2.0 * d_m)
+    cap_m = max(mm_to_m(CANISTER_SAFETY_ZONE_WALL_MM), 2.0 * d_m)
+
+    r = _np.sqrt((ys[:, None] - canister_cylinder.y_center_m) ** 2
+                 + (zs[None, :] - canister_cylinder.z_center_m) ** 2)
+    shell = (r > zone_outer_m) & (r <= zone_outer_m + 2.0 * d_m)
+    in_x = (xs >= x0 - cap_m) & (xs <= x0 + mm_to_m(CANISTER_SAFETY_ZONE_LENGTH_MM))
+    out = in_x[:, None, None] & shell[None, :, :]
+
+    # And a disc of the same thickness behind the end cap, so the pocket has
+    # bodywork against its floor as well as its walls.
+    behind = (xs >= x0 - cap_m - 2.0 * d_m) & (xs < x0 - cap_m)
+    out |= behind[:, None, None] & (r <= zone_outer_m + 2.0 * d_m)[None, :, :]
+    return out
+
+
 def halo_visibility_air_mask(halo_mask: "np.ndarray",
                              z_origin_m: float,
                              dz_m: float) -> "np.ndarray":

@@ -596,10 +596,24 @@ def build_unified_geometry(
     # fixed_hardware.canister_safety_zone_solid_mask. It carries no separate
     # mass; it is the body's own foam.
     if fixed_hardware is not None:
-        # No try/except: this import failing means the T5.5 zone is not being
-        # applied, and the car quietly goes back to a cartridge pocket floating
-        # 24.5 mm clear of the bodywork. A deleted function once slipped through
-        # exactly here because ImportError was swallowed. Let it raise.
+        # T5.5's safety zone stays INSIDE the body field, and that is not a
+        # double count. The zone is model block; DENSITY_BODY_KGM3 is 163.0,
+        # i.e. 0.163 g/cm3, which is the same PUR foam density the zone itself
+        # is quoted at. Its 10.712 cm3 therefore weighs 1.746 g whether it is
+        # counted as body or as a separate component -- the same number, once.
+        # Double counting would only start if something ALSO added a standalone
+        # safety-zone mass on top, and nothing does.
+        #
+        # Carving it out was tried (2026-08-07) and is strictly worse: excluding
+        # it from phi removed the body's reason to be there and the bodywork's
+        # top on the centreline fell 46.5 -> 19.5 mm against a zone surface at
+        # 47.0, putting the pocket back in mid-air; and as forced AIR the zone
+        # eroded the T4.2 virtual cargo by 6.5%, over its tolerance. All of that
+        # to arrive at an identical 1.746 g.
+        #
+        # No try/except: this import failing means the zone is not applied at
+        # all. A deleted function once slipped through exactly here because
+        # ImportError was swallowed. Let it raise.
         from fixed_hardware import canister_safety_zone_solid_mask
         hard_solid |= canister_safety_zone_solid_mask(
             getattr(fixed_hardware, "canister_cylinder", None),
