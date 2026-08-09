@@ -298,16 +298,17 @@ def _build_four_wheel_zones(
     on that boundary rounded onto the solid side of the nearest cell.
     """
     from geometry_contract import (
-        WHEEL_WIDTH_M, FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M, WHEEL_CLEARANCE_M,
+        FRONT_WHEEL_WIDTH_M, REAR_WHEEL_WIDTH_M,
+        FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M, WHEEL_CLEARANCE_M,
     )
 
     zones = []
-    for x_center_m, inner_y_m in (
-        (x_front_m, FRONT_WHEEL_INNER_Y_M),
-        (rear_axle_m, REAR_WHEEL_INNER_Y_M),
+    for x_center_m, inner_y_m, width_m in (
+        (x_front_m, FRONT_WHEEL_INNER_Y_M, FRONT_WHEEL_WIDTH_M),
+        (rear_axle_m, REAR_WHEEL_INNER_Y_M, REAR_WHEEL_WIDTH_M),
     ):
         band_min_m = inner_y_m - WHEEL_CLEARANCE_M
-        band_max_m = inner_y_m + WHEEL_WIDTH_M + WHEEL_CLEARANCE_M
+        band_max_m = inner_y_m + width_m + WHEEL_CLEARANCE_M
         for sign in (+1.0, -1.0):
             if sign > 0:
                 y_min_m, y_max_m = band_min_m, band_max_m
@@ -657,44 +658,33 @@ REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 # (6/11 - 1/2)*W = 5.5 mm too far forward at W=120. That does not change the
 # optimisation (the COM terms are ~0.2% of the shape velocity, measured), but
 # check_stability ranks on com_x and the deliverable reports it.
-# ── hardware masses ─────────────────────────────────────────────────────────
-# Two sets of numbers exist and they disagree by 3-4x. The MEASURED ones are
-# live; the CAD-derived ones are recorded below because they are what the
-# supplied geometry and the stated infill actually imply.
+# ── hardware masses, from CAD volume x density x infill ─────────────────────
+# The v2 parts (project owner, 2026-08-07) settled the 4x conflict that the v1
+# STLs created. v1 were SOLID envelopes -- 38% of their own bounding box, giving
+# 9.1 g per support and 47.70 g of hardware against a 48 g floor, which left
+# 0.30 g for the body. v2 are the real printed parts: 6-7% fill, thin-walled,
+# and volume x density now lands within ~12% of the masses measured on the
+# bench. Two independent routes agreeing is the check that was missing.
 #
-# CAD x density x infill (infill from the project owner 2026-08-07: wheels and
-# supports 100%, halo 20%; meshes are watertight single bodies so the volumes
-# are meaningful):
+#   part                        cm3     x rho   x infill  =  g each   n
+#   front wheel v2            0.775   1.04 ABS     100%      0.806    2
+#   Front Wheel Support v2    1.343   1.04 ABS     100%      1.396    2
+#   rear wheel v2             0.914   1.04 ABS     100%      0.951    2
+#   Rear Wheel Support v2     1.485   1.04 ABS     100%      1.545    2
+#   halo_helmet               6.705   0.80 LWPLA    20%      1.073    1
 #
-#   front_wheel.stl          1.262 cm3 x 1.04 ABS   x 100%  =  1.312 g  x2
-#   front_wheel_support.stl  8.764 cm3 x 1.04 ABS   x 100%  =  9.115 g  x2
-#   rear_wheel.stl           1.118 cm3 x 1.04 ABS   x 100%  =  1.163 g  x2
-#   rear_wheel_support.stl   8.872 cm3 x 1.04 ABS   x 100%  =  9.227 g  x2
-#   halo_helmet.stl          6.705 cm3 x 0.80 LWPLA x  20%  =  1.073 g
+#     front pair 4.41 g (measured 5)   rear pair 4.99 g (measured 6)
+#     halo 1.07 g (measured 3)         hardware total 15.47 g incl. rear wing
 #
-#     front pair 20.85 g   rear pair 20.78 g   halo 1.07 g   TOTAL 47.70 g
-#
-# THOSE CANNOT BE RIGHT AS THEY STAND. T3.6's competition minimum is 48 g and it
-# is met by machined body + fixed hardware, so 47.70 g of hardware leaves 0.30 g
-# of body. Measured end to end at 2 mm, n=300: the descent reaches 46.79 g
-# competition with the values below and 77.42 g with the CAD ones -- the body
-# carves the same either way, the floor just moves out of reach. The optimiser
-# would spend a full run carving toward a car that is 99% hardware.
-#
-# The four supports alone are 36.7 g of solid ABS. A whole F1-in-Schools car is
-# 50-60 g with the body the bulk of it, so a support set outweighing everything
-# else is the shape of number that means the STL is a clearance or assembly
-# ENVELOPE rather than the printed strut -- 8.76 cm3 is 38% of its own bounding
-# box. Resolve by exporting the actual printed solid; then swap these over and
-# delete this note.
-CAD_DERIVED_WHEEL_AXLE_FRONT_MASS_KG: float = 0.005      # measured; see note above
-CAD_DERIVED_WHEEL_AXLE_REAR_MASS_KG:  float = 0.02078
-CAD_DERIVED_HALO_MASS_KG:             float = 0.00107
-
-WHEEL_AXLE_FRONT_MASS_KG: float = 0.02085    # measured, both front wheels + supports
-WHEEL_AXLE_REAR_MASS_KG: float = 0.006       # measured; see note above     # measured, both rear wheels + supports
+# Volumes taken after repair -- fix_winding + fix_normals then |volume| per
+# closed body. Raw trimesh volume on these files is garbage (7.75e11 cm3 on a
+# 13x28x28 mm wheel) because the winding is inconsistent as exported, and the
+# rear support additionally carries a 5-face degenerate speck of zero volume
+# that makes it read as two bodies.
+WHEEL_AXLE_FRONT_MASS_KG: float = 0.00441   # 2 wheels + 2 supports, v2 CAD
+WHEEL_AXLE_REAR_MASS_KG:  float = 0.00499   # 2 wheels + 2 supports, v2 CAD
 WHEEL_AXLE_MASS_KG: float = (
-    WHEEL_AXLE_FRONT_MASS_KG + WHEEL_AXLE_REAR_MASS_KG)   # 11 g, was a 15 g guess
+    WHEEL_AXLE_FRONT_MASS_KG + WHEEL_AXLE_REAR_MASS_KG)   # 9.4 g
 
 # Halo. MEASURED 2026-08-03 at 3 g.
 #
@@ -731,7 +721,7 @@ CANISTER_CO2_DENSITY_G_CM3:   float = 0.70    # charged CO2
 CANISTER_STEEL_MASS_KG: float = 0.01525
 CANISTER_CO2_MASS_KG:   float = 0.00797
 
-HALO_MASS_KG: float = 0.003                  # measured; see note above
+HALO_MASS_KG: float = 0.00107
 
 # T3.6's competition minimum is 48 g EXCLUDING the cartridge, and it is met by
 # machined body + fixed hardware. If the hardware alone approaches it there is
@@ -757,10 +747,7 @@ def _warn_if_hardware_eats_the_floor() -> None:
             f"fixed hardware alone is {hw*1000:.2f} g against T3.6's "
             f"{T36_COMPETITION_FLOOR_KG*1000:.0f} g competition floor, leaving "
             f"only {headroom*1000:.2f} g for the machined body. The optimiser "
-            f"will carve the body away and still pass every mass check. The "
-            f"four wheel supports are {2*9.115+2*9.227:.1f} g of solid ABS on "
-            f"their own -- check whether those STLs are the printed struts or "
-            f"assembly envelopes before trusting a run.",
+            f"will carve the body away and still pass every mass check.",
             RuntimeWarning, stacklevel=2)
 
 

@@ -145,7 +145,18 @@ HARDWARE_CLEARANCE_M:  float = HARDWARE_CLEARANCE_MM / 1000.0
 # plane) AND nowhere near where the wheels actually sit (y=19-29mm / front,
 # y=16-24mm / rear). Measured, ~50% of the front wheel and ~58% of the rear
 # wheel ended up inside solid bodywork as a result.
-WHEEL_WIDTH_MM: float = 17.25              # measured, front and rear wheels identical
+# Front and rear are NOT the same width. Measured on the v2 CAD (2026-08-07):
+# front 13.25 mm, rear 17.25 mm -- which is T7.4.1's 13.0 mm front minimum and
+# T7.4.2's 17.0 mm rear minimum, each with a hair of margin. The v1 parts were
+# both 17.25 and the single constant matched; it no longer does, and using the
+# rear width for the front over-reserves 4 mm of lateral band per front wheel.
+FRONT_WHEEL_WIDTH_MM: float = 13.25
+REAR_WHEEL_WIDTH_MM:  float = 17.25
+FRONT_WHEEL_WIDTH_M:  float = FRONT_WHEEL_WIDTH_MM / 1000.0
+REAR_WHEEL_WIDTH_M:   float = REAR_WHEEL_WIDTH_MM / 1000.0
+# Kept as the REAR value for callers that still assume one width -- it is the
+# wider of the two, so anything sized by it stays conservative.
+WHEEL_WIDTH_MM: float = REAR_WHEEL_WIDTH_MM
 WHEEL_WIDTH_M:  float = WHEEL_WIDTH_MM / 1000.0
 
 # Inner (track-contact) face y-offset from centreline. Both measured design

@@ -15,8 +15,38 @@ def test_co2_mass_matches_part2_constant():
     _pass("test_co2_mass_matches_part2_constant")
 
 def test_wheel_constants_match_locked_race_objective():
+    """Cross-check Part 1 against PART 2, not against a literal.
+
+    This asserted `R_WHEEL_M == 0.015` -- a copy of the number it was supposed
+    to be checking. A copy cannot detect the two drifting apart; it only detects
+    Part 1 changing, and then fails even when Part 1 and Part 2 were updated
+    together and still agree. That is what happened when the radius moved to the
+    measured 14.13 mm. Read Part 2's value and compare.
+    """
     assert gc.N_WHEELS == 4, f"N_WHEELS={gc.N_WHEELS} != 4"
-    assert abs(gc.R_WHEEL_M - 0.015) < 1e-12, f"R_WHEEL_M={gc.R_WHEEL_M} != 0.015"
+
+    import importlib.util
+    import pathlib
+    p2 = (pathlib.Path(__file__).resolve().parent.parent.parent
+          / "part2-simulation" / "race_objective.py")
+    if not p2.exists():
+        return _pass("test_wheel_constants_match_locked_race_objective "
+                     "(skipped: Part 2 absent)")
+    # Read the constant textually -- importing race_objective drags in jax.
+    r_wheel = n_wheels = None
+    for line in p2.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s.startswith("R_WHEEL") and "=" in s and not s.startswith("R_WHEEL_M"):
+            r_wheel = float(s.split("=", 1)[1].split("#")[0].strip())
+        elif s.startswith("N_WHEELS") and "=" in s:
+            n_wheels = int(float(s.split("=", 1)[1].split("#")[0].strip()))
+    assert r_wheel is not None, f"could not find R_WHEEL in {p2}"
+    assert abs(gc.R_WHEEL_M - r_wheel) < 1e-12, (
+        f"Part 1 R_WHEEL_M={gc.R_WHEEL_M} but Part 2 R_WHEEL={r_wheel} -- these "
+        f"divide the rotational inertia term in m_eff and must be identical")
+    if n_wheels is not None:
+        assert gc.N_WHEELS == n_wheels, (
+            f"Part 1 N_WHEELS={gc.N_WHEELS} but Part 2 N_WHEELS={n_wheels}")
     _pass("test_wheel_constants_match_locked_race_objective")
 
 def test_nose_density_is_1000():

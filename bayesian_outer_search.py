@@ -85,15 +85,24 @@ WHEEL_X_HALF_WIDTH_M: float = WHEEL_X_CLEARANCE_HALF_WIDTH_M
 # Axle height above track surface (placeholder).
 AXLE_Z_M: float = R_WHEEL_M            # wheel centre at 15 mm
 
-# Fixed hardware mass stubs (g/kg). Replace with real measurements.
-# MEASURED 2026-08-03 (both sides combined), replacing guesses of 15 g and 8 g.
-# Stage 1 and Stage 2 must agree about the mass of the same car; they did not.
-STUB_WHEEL_FRONT_MASS_KG: float = 0.005  # front wheels + support systems
-STUB_WHEEL_REAR_MASS_KG:  float = 0.006  # rear wheels + support systems
-STUB_WHEEL_AXLE_MASS_KG: float = (
-    STUB_WHEEL_FRONT_MASS_KG + STUB_WHEEL_REAR_MASS_KG)   # 11 g, was 15 g
-STUB_HALO_MASS_KG:       float = 0.003   # measured, was an 8 g guess
-STUB_REAR_WING_MASS_KG:  float = 0.005   # ~5 g
+# Fixed hardware masses, DERIVED from fixed_hardware rather than restated.
+#
+# These used to be independent literals, and that is a second source of truth
+# for the same physical parts. It bit on 2026-08-07: fixed_hardware's masses were
+# updated and Stage 1 kept using its own copies, so the two stages disagreed
+# about the mass of the same car -- the exact failure the old comment here said
+# had been fixed. Importing them means a change in one place cannot leave the
+# other behind.
+#
+# The STUB_ prefix is kept because callers use these names; nothing about them
+# is a stub any more.
+from fixed_hardware import (                                    # noqa: E402
+    WHEEL_AXLE_FRONT_MASS_KG as STUB_WHEEL_FRONT_MASS_KG,
+    WHEEL_AXLE_REAR_MASS_KG as STUB_WHEEL_REAR_MASS_KG,
+    WHEEL_AXLE_MASS_KG as STUB_WHEEL_AXLE_MASS_KG,
+    HALO_MASS_KG as STUB_HALO_MASS_KG,
+    REAR_WING_MASS_KG as STUB_REAR_WING_MASS_KG,
+)
 
 # Distance below which we warm-start from a previous result (normalised space).
 WARM_START_THRESHOLD: float = 0.15
