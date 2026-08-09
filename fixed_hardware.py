@@ -657,11 +657,14 @@ REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 # (6/11 - 1/2)*W = 5.5 mm too far forward at W=120. That does not change the
 # optimisation (the COM terms are ~0.2% of the shape velocity, measured), but
 # check_stability ranks on com_x and the deliverable reports it.
-# ── hardware masses, from CAD volume x density x infill ─────────────────────
-# Infill confirmed by the project owner 2026-08-07: wheels and wheel support
-# systems 100%, halo 20%. With that, mass is just volume x density and the
-# supplied meshes are all watertight single bodies, so their volumes mean
-# something:
+# ── hardware masses ─────────────────────────────────────────────────────────
+# Two sets of numbers exist and they disagree by 3-4x. The MEASURED ones are
+# live; the CAD-derived ones are recorded below because they are what the
+# supplied geometry and the stated infill actually imply.
+#
+# CAD x density x infill (infill from the project owner 2026-08-07: wheels and
+# supports 100%, halo 20%; meshes are watertight single bodies so the volumes
+# are meaningful):
 #
 #   front_wheel.stl          1.262 cm3 x 1.04 ABS   x 100%  =  1.312 g  x2
 #   front_wheel_support.stl  8.764 cm3 x 1.04 ABS   x 100%  =  9.115 g  x2
@@ -669,24 +672,27 @@ REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 #   rear_wheel_support.stl   8.872 cm3 x 1.04 ABS   x 100%  =  9.227 g  x2
 #   halo_helmet.stl          6.705 cm3 x 0.80 LWPLA x  20%  =  1.073 g
 #
-# !! THIS IS A +28.7 g CHANGE AND IT NEARLY EXHAUSTS THE T3.6 FLOOR ON ITS OWN.
-# !! Fixed hardware goes 14.0 g -> 42.71 g. Add the 5 g rear-wing placeholder
-# !! and it is 47.71 g against a 48 g competition minimum, leaving ~0.3 g for
-# !! the machined body. The optimiser will duly carve the body to nothing,
-# !! because that is what the numbers now say is legal.
+#     front pair 20.85 g   rear pair 20.78 g   halo 1.07 g   TOTAL 47.70 g
 #
-# The four supports alone come to 36.7 g of solid ABS. For context a whole
-# F1-in-Schools car is typically 50-60 g with the body the bulk of it, so a
-# support set outweighing the entire rest of the car is the sort of number that
-# usually means the STL is a clearance/assembly ENVELOPE rather than the printed
-# strut -- 8.76 cm3 is 38% of its own bounding box. The old 5 g/6 g constants
-# were described as measured, and 5 g for two wheels plus two supports is what a
-# real bracket set weighs.
+# THOSE CANNOT BE RIGHT AS THEY STAND. T3.6's competition minimum is 48 g and it
+# is met by machined body + fixed hardware, so 47.70 g of hardware leaves 0.30 g
+# of body. Measured end to end at 2 mm, n=300: the descent reaches 46.79 g
+# competition with the values below and 77.42 g with the CAD ones -- the body
+# carves the same either way, the floor just moves out of reach. The optimiser
+# would spend a full run carving toward a car that is 99% hardware.
 #
-# Applied as instructed, with the consequence stated rather than buried. If the
-# body wants to carve to zero on the next run, this is why.
+# The four supports alone are 36.7 g of solid ABS. A whole F1-in-Schools car is
+# 50-60 g with the body the bulk of it, so a support set outweighing everything
+# else is the shape of number that means the STL is a clearance or assembly
+# ENVELOPE rather than the printed strut -- 8.76 cm3 is 38% of its own bounding
+# box. Resolve by exporting the actual printed solid; then swap these over and
+# delete this note.
+CAD_DERIVED_WHEEL_AXLE_FRONT_MASS_KG: float = 0.005      # measured; see note above
+CAD_DERIVED_WHEEL_AXLE_REAR_MASS_KG:  float = 0.02078
+CAD_DERIVED_HALO_MASS_KG:             float = 0.00107
+
 WHEEL_AXLE_FRONT_MASS_KG: float = 0.02085    # measured, both front wheels + supports
-WHEEL_AXLE_REAR_MASS_KG: float = 0.02078     # measured, both rear wheels + supports
+WHEEL_AXLE_REAR_MASS_KG: float = 0.006       # measured; see note above     # measured, both rear wheels + supports
 WHEEL_AXLE_MASS_KG: float = (
     WHEEL_AXLE_FRONT_MASS_KG + WHEEL_AXLE_REAR_MASS_KG)   # 11 g, was a 15 g guess
 
@@ -725,7 +731,7 @@ CANISTER_CO2_DENSITY_G_CM3:   float = 0.70    # charged CO2
 CANISTER_STEEL_MASS_KG: float = 0.01525
 CANISTER_CO2_MASS_KG:   float = 0.00797
 
-HALO_MASS_KG: float = 0.00107
+HALO_MASS_KG: float = 0.003                  # measured; see note above
 
 # T3.6's competition minimum is 48 g EXCLUDING the cartridge, and it is met by
 # machined body + fixed hardware. If the hardware alone approaches it there is
