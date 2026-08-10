@@ -649,6 +649,15 @@ def _triangle_aspect_ratios(mesh: "trimesh.Trimesh") -> np.ndarray:
     return (longest ** 2) * np.sqrt(3.0) / (4.0 * areas)
 
 
+# Measured envelope for accepting a mesh snappyHexMesh has to swallow. Module
+# level because two places need it: _check_mesh_quality below, and Part 3's
+# _decimate_for_cfd, which hands OpenFOAM a DIFFERENT mesh (decimated) that
+# never passes through this gate. Duplicating the numbers there is how they
+# drift apart. See _check_mesh_quality for the solver runs these come from.
+MEASURED_SAFE_MIN_ANGLE_DEG: float = 8.6
+MEASURED_SAFE_SLIVER_FRACTION: float = 1.0e-4    # 3/62,500 is 4.8e-5
+
+
 def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
     """
     Check mesh quality for snappyHexMesh compatibility.
@@ -733,8 +742,8 @@ def _check_mesh_quality(mesh: "trimesh.Trimesh", component: str) -> None:
     # envelope it still raises, because nothing has been measured out there: if
     # you want to go lower, mesh a sample first and move these numbers with the
     # evidence rather than assuming, as the 10 deg did.
-    _MEASURED_SAFE_MIN_ANGLE_DEG = 8.6
-    _MEASURED_SAFE_SLIVER_FRACTION = 1.0e-4          # 3/62,500 is 4.8e-5
+    _MEASURED_SAFE_MIN_ANGLE_DEG = MEASURED_SAFE_MIN_ANGLE_DEG
+    _MEASURED_SAFE_SLIVER_FRACTION = MEASURED_SAFE_SLIVER_FRACTION
 
     if min_angle_deg is not None and min_angle_deg < MESH_MIN_TRIANGLE_ANGLE_DEG:
         # Seeded with the DO-NOTHING option, so the message cannot claim a
