@@ -87,7 +87,21 @@ def assemble_stl(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     full_path = out_path / f"car_{candidate_id}_full.stl"
-    full_car.export(str(full_path), file_type="stl_ascii")
+    # BINARY, unlike the half below. The half must stay ASCII: Part 2 asserts it
+    # (_read_ascii_stl_triangles, _assert_watertight_stl) and the adjoint
+    # sensitivity is index-aligned to its vertex LINES, so the text form is
+    # load-bearing. The full car has no such consumer -- nothing reads this file
+    # at all in the optimiser; stl_path is only stored as a string in the record
+    # and used as a warn-once cache key. Both places that do load a full car
+    # (stl_assembler.combine_*, sandbox/explore) use trimesh.load, which detects
+    # the format.
+    #
+    # ASCII cost 155 MB per iteration. On a 45 GB disk that filled it to 98%
+    # with 11 GB of full STLs across 85 iterations, which would have killed any
+    # long unattended run partway through. Binary is ~5x smaller for identical
+    # geometry, and the file stays exactly as reconstructable as before -- it is
+    # a mirror of the half across y=0 either way.
+    full_car.export(str(full_path), file_type="stl")
 
     # ── Right-half STL (per-component slicing) ─────────────────────────────
     # Slice each symmetric component individually, then add the sidepod directly.
