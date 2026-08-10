@@ -132,6 +132,38 @@ def _place_by_center(mesh, center_xyz_m, keep_z_floor: bool = False):
 
 # ── part placement in project coordinates ───────────────────────────────────
 
+
+def _spin_axis_to_y(mesh):
+    """Rotate a wheel so it spins about y, whatever axis it was exported on.
+
+    A wheel is round in the x-z plane with its axle along y. The v1 parts were
+    exported that way ([28.2, 17.2, 28.2]); the v2 parts are not -- they measure
+    [13.25, 28.24, 28.25], i.e. round in y-z with the axle along x, a quarter
+    turn out. Placed unrotated they sit like discs facing down the car.
+
+    Detected rather than hardcoded: the THIN axis of a wheel is its width, and
+    that axis must end up as y. So if the thin axis is x, turn a quarter about
+    z; if it is z, turn a quarter about x; if it is already y, do nothing. A
+    future re-export in either convention then lands correctly without anyone
+    having to notice.
+    """
+    import numpy as _np
+    import trimesh
+
+    m = mesh.copy()
+    ext = m.bounds[1] - m.bounds[0]
+    thin = int(_np.argmin(ext))
+    if thin == 1:
+        return m
+    if thin == 0:
+        R = trimesh.transformations.rotation_matrix(_np.pi / 2, [0, 0, 1])
+    else:
+        R = trimesh.transformations.rotation_matrix(_np.pi / 2, [1, 0, 0])
+    m.apply_transform(R)
+    m.fix_normals()
+    return m
+
+
 def place_wheels(W_mm: float, x_front_mm: float, hw_inputs) -> dict:
     """Four real wheel meshes at the project axle positions.
 
@@ -142,19 +174,21 @@ def place_wheels(W_mm: float, x_front_mm: float, hw_inputs) -> dict:
     assumed width.
     """
     from geometry_contract import (
-        FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M, WHEEL_WIDTH_M,
+        FRONT_WHEEL_INNER_Y_M, REAR_WHEEL_INNER_Y_M,
+        FRONT_WHEEL_WIDTH_M, REAR_WHEEL_WIDTH_M,
     )
 
-    front = _load("front_wheel.stl")
-    rear = _load("rear_wheel.stl")
-    half_w = WHEEL_WIDTH_M / 2.0
+    front = _spin_axis_to_y(_load("front_wheel.stl"))
+    rear = _spin_axis_to_y(_load("rear_wheel.stl"))
 
     out = {}
-    for axle, mesh, x_m, inner_y in (
-        ("front", front, x_front_mm / 1000.0, FRONT_WHEEL_INNER_Y_M),
-        ("rear", rear, (x_front_mm + W_mm) / 1000.0, REAR_WHEEL_INNER_Y_M),
+    for axle, mesh, x_m, inner_y, width_m in (
+        ("front", front, x_front_mm / 1000.0, FRONT_WHEEL_INNER_Y_M,
+         FRONT_WHEEL_WIDTH_M),
+        ("rear", rear, (x_front_mm + W_mm) / 1000.0, REAR_WHEEL_INNER_Y_M,
+         REAR_WHEEL_WIDTH_M),
     ):
-        y_c = inner_y + half_w
+        y_c = inner_y + width_m / 2.0
         for side, sgn in (("right", +1.0), ("left", -1.0)):
             # centre x on the axle, y on the wheel centre, bottom on the ground
             out[f"wheel_{axle}_{side}"] = _place_by_center(

@@ -659,12 +659,17 @@ REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 # optimisation (the COM terms are ~0.2% of the shape velocity, measured), but
 # check_stability ranks on com_x and the deliverable reports it.
 # ── hardware masses, from CAD volume x density x infill ─────────────────────
-# The v2 parts (project owner, 2026-08-07) settled the 4x conflict that the v1
-# STLs created. v1 were SOLID envelopes -- 38% of their own bounding box, giving
-# 9.1 g per support and 47.70 g of hardware against a 48 g floor, which left
-# 0.30 g for the body. v2 are the real printed parts: 6-7% fill, thin-walled,
-# and volume x density now lands within ~12% of the masses measured on the
-# bench. Two independent routes agreeing is the check that was missing.
+# The v2 parts settled the 4x conflict that the v1 STLs created. v1 were SOLID
+# envelopes -- 38% of their own bounding box, giving 9.1 g per support and
+# 47.70 g of hardware against a 48 g floor, which left 0.30 g for the body. v2
+# are the real printed geometry, 6-7% of their bounding box and thin-walled.
+#
+# These are CAD ONLY. Wheels and both supports print at 100% infill, so mass is
+# simply volume x density with nothing to calibrate; the halo is 20%. The bench
+# figures that used to live here (5 g front pair, 6 g rear, 3 g halo) are NOT
+# used -- the project owner's instruction, 2026-08-10, is to take the CAD. They
+# are noted only because they agree to ~12%, which is the independent check that
+# the v1 numbers never had.
 #
 #   part                        cm3     x rho   x infill  =  g each   n
 #   front wheel v2            0.775   1.04 ABS     100%      0.806    2
@@ -673,8 +678,9 @@ REAR_WING_HEIGHT_MM: float = 50.0      # within T9.4.3 max 65mm
 #   Rear Wheel Support v2     1.485   1.04 ABS     100%      1.545    2
 #   halo_helmet               6.705   0.80 LWPLA    20%      1.073    1
 #
-#     front pair 4.41 g (measured 5)   rear pair 4.99 g (measured 6)
-#     halo 1.07 g (measured 3)         hardware total 15.47 g incl. rear wing
+#     front pair 4.41 g   rear pair 4.99 g   halo 1.07 g
+#     hardware total 15.47 g incl. the 5 g rear-wing placeholder
+#     (bench, unused: 5 / 6 / 3 g -- agrees to ~12%)
 #
 # Volumes taken after repair -- fix_winding + fix_normals then |volume| per
 # closed body. Raw trimesh volume on these files is garbage (7.75e11 cm3 on a
