@@ -986,14 +986,18 @@ def extract_unified_surface(
     mesh = SE._repair_mesh(SE._marching_cubes(geom.phi))
 
     # ── Stage 3a: machining radius, milled vertices only ───────────────────
-    for attempt in range(max_retries):
+    # range(max_retries + 1), not range(max_retries): the loop CHECKS at the
+    # top and repairs at the bottom, so the old bound raised on its last pass
+    # without ever attempting that repair -- 3 retries performed 2, while the
+    # message said 3. The extra pass is a real attempt, not just honesty.
+    for attempt in range(max_retries + 1):
         vlabels = _points_to_labels(geom, np.asarray(mesh.vertices), filled)
         is_milled = np.isin(vlabels, list(milled_ids))
         radii = SE._estimate_local_radii(mesh)
         bad = np.where(is_milled & (radii < MIN_RADIUS_M))[0]
         if bad.size == 0:
             break
-        if attempt == max_retries - 1:
+        if attempt == max_retries:
             raise SE.RadiusViolation(
                 f"car: min radius {radii[bad].min()*1000:.2f} mm < "
                 f"{MIN_RADIUS_M*1000:.2f} mm on {bad.size} milled vertices "
@@ -1004,7 +1008,11 @@ def extract_unified_surface(
 
     # ── Stage 3b: nose wall thickness, nose cells only ─────────────────────
     nose_cells = geom.component_mask("nose")
-    for attempt in range(max_retries):
+    # range(max_retries + 1), not range(max_retries): the loop CHECKS at the
+    # top and repairs at the bottom, so the old bound raised on its last pass
+    # without ever attempting that repair -- 3 retries performed 2, while the
+    # message said 3. The extra pass is a real attempt, not just honesty.
+    for attempt in range(max_retries + 1):
         thin = (
             SE._thin_wall_mask(geom.phi, NOSE_MIN_WALL_THICKNESS_M)
             & nose_cells
@@ -1012,7 +1020,7 @@ def extract_unified_surface(
         )
         if not thin.any():
             break
-        if attempt == max_retries - 1:
+        if attempt == max_retries:
             raise SE.WallThicknessViolation(
                 f"nose: {int(thin.sum())} solid cells thinner than "
                 f"{NOSE_MIN_WALL_THICKNESS_M*1000:.2f} mm (3D-printing shell "
