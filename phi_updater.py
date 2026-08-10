@@ -667,7 +667,8 @@ def apply_adjoint_to_unified(
     (--aero-only sets w_mass=0). They no longer set magnitudes, and
     gradient_combiner.calibrate_gradient_weights is not needed on this path.
     """
-    from unified_phi import density_field, enforce_symmetry
+    from unified_phi import (density_field, enforce_machinability,
+                             enforce_symmetry)
 
     phi = geom.phi
     verts = np.asarray(right_half_mesh.vertices, dtype=np.float64)
@@ -936,3 +937,22 @@ def apply_adjoint_to_unified(
             combined = np.clip(combined, -cap, cap)
     hj_update(phi, combined, cfl_limited_dt(combined, dt))
     enforce_symmetry(geom)
+
+    # Void no tool can reach is not void. Stage 1 has applied this since it was
+    # written; STAGE 2 NEVER HAS, so the only loop that actually runs CFD was
+    # also the only one free to carve sealed cavities -- and it is the one whose
+    # output gets manufactured. Measured on the live 0.5 mm run: 4,942 mm^2 of
+    # surface the cutter cannot reach, 7.7% of the car, now priced at ~44 ms by
+    # machinability_penalty. Better to make the state unrepresentable than to
+    # charge for it.
+    #
+    # Every step, not Stage 1's every-10 cadence. That cadence is justified there
+    # by "the projection only has to hold at the states that get measured"; in
+    # Stage 2 EVERY iteration is measured -- each one meshes, solves and writes a
+    # record. Cost is four cumsums over the grid against a ~15 minute CFD solve
+    # on the same iteration, the same argument reinitialise_sdf above makes.
+    #
+    # AFTER enforce_symmetry, not before: _clear_run ORs +y and -y, so the
+    # reachable set of a y-symmetric field is itself y-symmetric and this cannot
+    # break the symmetry the line above just imposed.
+    enforce_machinability(geom)

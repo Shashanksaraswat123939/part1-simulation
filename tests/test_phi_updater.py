@@ -478,6 +478,86 @@ def test_the_update_actually_moves_the_surface():
         "apply_adjoint_to_unified)".format(moved, before, 100.0 * moved / before))
 
 
+def test_stage2_update_leaves_no_void_the_cutter_cannot_reach():
+    """Stage 2 must project unreachable void away, exactly as Stage 1 does.
+
+    enforce_machinability was applied in bayesian_outer_search (Stage 1) from
+    the day it was written and NOWHERE in Stage 2 -- so the only loop that runs
+    real CFD was also the only one free to carve sealed cavities, and it is the
+    one whose output gets manufactured.
+
+    Measured on this geometry with the projection removed: 2,147 unreachable
+    void cells after one step, then 767 / 830 / 770 / 742 / 691. It does not
+    heal on its own; it plateaus. On the live 0.5 mm run that showed up as
+    4,942 mm^2 of surface the cutter cannot reach, 7.7% of the car.
+
+    A cavity no tool can enter is not a saving, it is a part that cannot be
+    made -- and the T3.6 mass it appears to save is mass the real car still has.
+    """
+    import warnings
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import coarse
+    coarse.use_spacing(1.5)
+
+    import phi_updater as pu
+    import unified_phi as UP
+
+    def unreachable_void(g):
+        solid = g.phi.grid < 0
+
+        def clear_run(axis, positive):
+            s = np.flip(solid, axis=axis) if positive else solid
+            acc = np.cumsum(s, axis=axis) - s
+            return np.flip(acc, axis=axis) == 0 if positive else acc == 0
+
+        reachable = (clear_run(2, True) | clear_run(2, False)
+                     | clear_run(1, True) | clear_run(1, False))
+        return int(((~solid) & (~reachable) & (~g.phi.hard_mask_air)).sum())
+
+    geom = UP.build_unified_geometry(130.0, 46.0, 20.0, init_mode="full",
+                                     with_cargo=False)
+    verts = np.asarray(UP.extract_half_surface(geom).vertices)
+    rng = np.random.default_rng(1)
+    sens = 5e3 * rng.normal(size=len(verts))
+    grads = {"dT_dD20": 0.4868, "dT_dmass": 40.0, "dT_dh_com": 0.0,
+             "dT_dx_com": 0.0, "dT_dL": 0.0}
+
+    class _MR:
+        total_mass_kg, com_x_m, com_z_m = 0.1494, 0.122, 0.0296
+
+    def step(g):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pu.apply_adjoint_to_unified(
+                g, sens, SimpleNamespace(vertices=verts), 0.5,
+                {"w_aero": 1.0, "w_mass": 1.0, "w_com": 0.0, "w_mfg": 0.0},
+                grads, _MR())
+
+    for i in range(4):
+        step(geom)
+        n = unreachable_void(geom)
+        assert n == 0, (
+            f"{n} cells of void no tool can reach after Stage 2 update {i + 1}; "
+            "enforce_machinability is not running in apply_adjoint_to_unified")
+
+    # Prove the assertion above can fail -- without the projection this exact
+    # carve leaves hundreds of sealed cells, so the test is not vacuous.
+    original = UP.enforce_machinability
+    UP.enforce_machinability = lambda g: 0
+    try:
+        bare = UP.build_unified_geometry(130.0, 46.0, 20.0, init_mode="full",
+                                         with_cargo=False)
+        step(bare)
+        assert unreachable_void(bare) > 100, (
+            "removing the projection left no unreachable void, so the check "
+            "above proves nothing -- this carve no longer seals cavities")
+    finally:
+        UP.enforce_machinability = original
+
+
 if __name__ == "__main__":
     # Collected by name. The hand-written call list below this line silently
     # dropped every test appended after it -- the bug that has already hidden
