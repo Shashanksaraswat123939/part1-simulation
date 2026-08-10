@@ -162,8 +162,28 @@ WHEEL_WIDTH_M:  float = WHEEL_WIDTH_MM / 1000.0
 # Inner (track-contact) face y-offset from centreline. Both measured design
 # choices from the CAD -- comfortably above T7.2's legal MINIMUM half-gaps
 # (front 19.0mm, rear 15.0mm); the regs set a floor, not an exact value.
-FRONT_WHEEL_INNER_Y_MM: float = 19.25      # >= T7.2.1 min half-gap 19.0mm
-REAR_WHEEL_INNER_Y_MM:  float = 16.25      # >= T7.2.2 min half-gap 15.0mm
+# Wheels sit FLUSH with the outboard end of their support, because that is where
+# the axle ends -- a wheel cannot hang in space past its own stub, and pulling it
+# inboard of the stub leaves the axle poking out.
+#
+# Derived, not chosen: inner_y = support outer face - wheel width. Measured on
+# the v2 CAD the supports reach y = 36.50 (front) and 33.50 (rear), so
+#     front  36.50 - 13.25 = 23.25
+#     rear   33.50 - 17.25 = 16.25
+# The rear was already flush. The FRONT was 4.00 mm short: it kept the 19.25 that
+# suited the v1 wheel when both wheels were 17.25 wide, and when the v2 front
+# wheel came in at 13.25 its outer face pulled in by exactly that 4 mm.
+#
+# Both clear their minimum half-gaps with room: T7.2.1 wants >= 19.0 at the
+# front (23.25) and T7.2.2 >= 15.0 at the rear (16.25). Widening the front also
+# moves T7.9's "inside edge of track contact" outboard, which RELEASES body
+# volume rather than taking it.
+FRONT_WHEEL_SUPPORT_OUTER_Y_MM: float = 36.50   # measured, v2 CAD
+REAR_WHEEL_SUPPORT_OUTER_Y_MM:  float = 33.50   # measured, v2 CAD
+FRONT_WHEEL_INNER_Y_MM: float = (
+    FRONT_WHEEL_SUPPORT_OUTER_Y_MM - FRONT_WHEEL_WIDTH_MM)   # 23.25
+REAR_WHEEL_INNER_Y_MM:  float = (
+    REAR_WHEEL_SUPPORT_OUTER_Y_MM - REAR_WHEEL_WIDTH_MM)     # 16.25
 FRONT_WHEEL_INNER_Y_M:  float = FRONT_WHEEL_INNER_Y_MM / 1000.0
 REAR_WHEEL_INNER_Y_M:   float = REAR_WHEEL_INNER_Y_MM / 1000.0
 

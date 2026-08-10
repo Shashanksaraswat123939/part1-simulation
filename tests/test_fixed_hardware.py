@@ -287,6 +287,43 @@ def test_wheel_supports_are_not_flipped_end_for_end():
     _pass("test_wheel_supports_are_not_flipped_end_for_end")
 
 
+
+
+def test_wheels_sit_flush_with_their_support_ends():
+    """A wheel ends where its axle ends.
+
+    inner_y is derived as (support outer face - wheel width) so the two agree by
+    construction. It used to be a literal, and it drifted: 19.25 suited the v1
+    front wheel when both wheels were 17.25 mm wide, and when the v2 front wheel
+    arrived at 13.25 mm its outer face pulled 4.00 mm inboard of the support,
+    leaving the axle stub poking out past the tyre.
+
+    Checked against the PLACED meshes, not the constants, so a change in either
+    the CAD or the placement maths shows up here.
+    """
+    import sys as _s
+    from pathlib import Path as _P
+    _s.path.insert(0, str(_P(__file__).resolve().parent.parent / "sandbox"))
+    import hardware_assembly as HA
+    import geometry_contract as gc
+
+    wheels = HA.place_wheels(120.0, 36.0, None)
+    supports = HA.place_supports(120.0, 36.0)
+    for axle in ("front", "rear"):
+        w_outer = wheels[f"wheel_{axle}_right"].bounds[1][1] * 1000.0
+        s_outer = supports[f"support_{axle}_right"].bounds[1][1] * 1000.0
+        assert abs(w_outer - s_outer) < 0.05, (
+            f"{axle} wheel outer face is at {w_outer:.2f} mm but its support "
+            f"ends at {s_outer:.2f} mm -- {s_outer - w_outer:+.2f} mm out")
+
+    # And the derivation must not have pushed either inside its legal half-gap.
+    assert gc.FRONT_WHEEL_INNER_Y_MM >= 19.0, (
+        f"front inner y {gc.FRONT_WHEEL_INNER_Y_MM} under T7.2.1's 19.0 mm")
+    assert gc.REAR_WHEEL_INNER_Y_MM >= 15.0, (
+        f"rear inner y {gc.REAR_WHEEL_INNER_Y_MM} under T7.2.2's 15.0 mm")
+    _pass("test_wheels_sit_flush_with_their_support_ends")
+
+
 if __name__ == "__main__":
     # Collected BY NAME. The hand-written list that used to live here silently
     # skipped every test added after it was written -- see
