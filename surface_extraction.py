@@ -501,6 +501,15 @@ def _find_inaccessible_faces(
         reported area was purely the normal test above. The except no longer
         pretends success -- an unusable ray engine raises.
 
+    MEASURE THIS ON THE FULL CAR, NOT A HALF. With no material at y<0, a
+    shadow ray from an undercut face escapes through the missing half and the
+    face reads as reachable. Measured on the same geometry at 1.5 mm: the half
+    mesh reports 166 mm^2 blocked, the full car 4,762 mm^2 -- a 29x
+    under-report, and it is the full-car figure that is stable under
+    refinement (4,762 at 1.5 mm, 4,807 at 1.0 mm, 4,942 live at 0.5 mm).
+    extract_unified_surface already does the right thing; this note is so the
+    next person measuring by hand does not repeat the mistake.
+
     boundary_exempt: optional bool mask (see _boundary_coincident_face_mask)
     of faces that are always treated as accessible regardless of the
     tool-direction test -- flat grid-boundary cut faces, not curved
