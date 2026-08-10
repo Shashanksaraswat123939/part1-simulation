@@ -16,6 +16,7 @@ sys.path.insert(0, str(_ROOT / "sandbox"))
 sys.path.insert(0, str(_ROOT.parent / "part2-simulation"))
 
 import numpy as np
+import pytest
 
 import coarse  # noqa: E402  -- also sets PART2_PATH
 coarse.use_spacing(2.0)
@@ -30,6 +31,13 @@ W, XF, DH = 130.0, 46.0, 20.0
 
 def _pass(n): print(f"PASS {n}")
 def _fail(n, m): print(f"FAIL {n}: {m}"); sys.exit(1)
+
+
+@pytest.fixture(autouse=True)
+def _coarse_spacing():
+    """conftest restores the pristine spacing after each test; put this file's
+    2 mm back so _CACHE'd geometry stays consistent with the globals."""
+    coarse.use_spacing(2.0)
 
 
 _CACHE = {}

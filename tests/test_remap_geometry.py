@@ -147,6 +147,14 @@ def test_warm_start_carries_a_CARVED_field_to_the_next_d_halo():
     from types import SimpleNamespace
 
     import numpy as np
+
+    # Set BEFORE the GRID_SPACING_M import below, which binds a value rather
+    # than a live reference. This test used to inherit 2 mm from whichever file
+    # pytest collected earlier; at the production 0.3 mm the build below takes
+    # ~15 min and the cargo-erosion comment further down stops making sense.
+    import coarse
+    coarse.use_spacing(2.0)
+
     import phi_updater as pu
     from geometry_contract import GRID_SPACING_M
     from unified_phi import (build_unified_geometry, compute_mass_com,
@@ -163,8 +171,13 @@ def test_warm_start_carries_a_CARVED_field_to_the_next_d_halo():
         return sum(c.mass_kg for c in compute_mass_com(g))
 
     def _band_grad(g):
+        # g.spacing_m, not the captured global: a remap can change the spacing
+        # under this helper, and an empty band makes np.median return NaN,
+        # which compares False against every threshold and reads as a failure.
         gm = pu._grad_magnitude(g.phi.grid.astype(np.float64))
-        return float(np.median(gm[np.abs(g.phi.grid) < 2.0 * GRID_SPACING_M]))
+        band = np.abs(g.phi.grid) < 2.0 * (g.spacing_m or GRID_SPACING_M)
+        assert band.any(), "no interface band found -- spacing mismatch"
+        return float(np.median(gm[band]))
 
     # x_front 42.9 is what Stage 1 chose for the live 2026-07-29 run. 46.0
     # paired with d_halo=43.72 is infeasible -- the cargo collides with the halo

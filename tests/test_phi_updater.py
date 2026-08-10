@@ -266,9 +266,12 @@ def _real_geom():
     _sb = os.path.join(os.path.dirname(_here), "sandbox")
     if _sb not in _s.path:
         _s.path.insert(0, _sb)
+    # Re-applied on every call, not just the cache miss: conftest restores the
+    # pristine spacing after each test, so a later test reading the cached geom
+    # would otherwise see globals that no longer describe it.
+    import coarse
+    coarse.use_spacing(2.0)
     if "geom" not in _REAL_CACHE:
-        import coarse
-        coarse.use_spacing(2.0)
         from unified_phi import build_unified_geometry, extract_half_surface
         g = build_unified_geometry(120.0, 46.0, 20.0, init_mode="full",
                                    with_cargo=False)
@@ -434,11 +437,16 @@ def test_the_update_actually_moves_the_surface():
     why the no-CFD path reached the 48 g floor and this one never left 149 g.
     """
     from phi_updater import _grad_magnitude
-    from geometry_contract import GRID_SPACING_M as _dx
 
     def band_grad_median(g):
+        # g.spacing_m, not the module global: _real_geom() below switches the
+        # build to 2 mm, so a spacing captured before that call selects a band
+        # ~7x too narrow, catches no cells, and np.median returns NaN -- which
+        # compares False against every threshold and reads as a real failure.
         gm = _grad_magnitude(g.phi.grid.astype(np.float64))
-        return float(np.median(gm[np.abs(g.phi.grid) < 2.0 * _dx]))
+        band = np.abs(g.phi.grid) < 2.0 * g.spacing_m
+        assert band.any(), "no interface band found -- spacing mismatch"
+        return float(np.median(gm[band]))
 
     # The as-built field is deliberately NOT a distance function: _init_field's
     # "full" mode writes a constant -GRID_SPACING_M, and redistancing it at

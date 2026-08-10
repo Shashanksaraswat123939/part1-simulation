@@ -21,11 +21,25 @@ sys.path.insert(0, str(_ROOT.parent / "part2-simulation"))
 
 import numpy as np
 
+import pytest  # noqa: E402
+
 import coarse  # noqa: E402
 coarse.use_spacing(2.0)
 
 from bounding_volumes import default_rule_envelope  # noqa: E402
 from geometry_contract import GRID_SPACING_M, get_density  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _coarse_spacing():
+    """Re-apply this file's 2 mm spacing before each test.
+
+    conftest restores the pristine 0.3 mm after every test so the call above
+    can't leak into other files. But GRID_SPACING_M was frozen at import (line
+    above) from the 2 mm value, so every test here needs the globals put back
+    to match it -- and at 0.3 mm these grids are 300x larger and never finish.
+    """
+    coarse.use_spacing(2.0)
 
 W, XF, DH = 130.0, 46.0, 20.0
 
