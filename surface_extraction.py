@@ -476,12 +476,30 @@ def _find_inaccessible_faces(
     """
     Return face indices not reachable from any allowed tool direction.
 
-    Algorithm: For each face, test each tool direction.
-    A face is accessible from direction d if:
-      (a) Its normal has a positive dot product with d (faces toward the tool), AND
-      (b) A ray cast from the face centre + epsilon*d in the -d direction hits
-          the face without being blocked by any other face first.
-    If any direction makes the face accessible, it's accessible.
+    Algorithm: SHADOW RAY. A face is accessible from tool direction d if a ray
+    starting just off the face (along its own normal, to avoid running in the
+    face's own plane) and travelling OUTWARD along +d escapes without hitting
+    the mesh. That is exactly "the cutter has a clear straight path in from d".
+    A face is inaccessible only if every allowed direction is blocked.
+
+    Two things this replaces, both measured on the 2026-08-10 car (36,260
+    faces, 37,950 mm^2):
+
+      * The old normal-dot gate required dot(n, d) > 0.05, so a face had to
+        POINT at a tool axis. With tools only along +-y/+-z, every face with a
+        pure +-x normal failed that for all four directions and was reported
+        unmachinable -- 2,919 faces / 3,330 mm^2, and 100% of the flagged area
+        was exactly those x-normal walls. That is a property of the tool set,
+        not of the shape: a 3-axis cutter coming down +z machines a vertical
+        wall with the side of the tool. The gate was condemning every car for
+        having a nose and a tail.
+
+      * The old ray test never ran. intersects_id with return_locations=False
+        returns TWO arrays, the call unpacked THREE, and the resulting
+        ValueError was caught by a bare `except Exception` whose handler marked
+        every candidate accessible. So no occlusion was ever checked; the
+        reported area was purely the normal test above. The except no longer
+        pretends success -- an unusable ray engine raises.
 
     boundary_exempt: optional bool mask (see _boundary_coincident_face_mask)
     of faces that are always treated as accessible regardless of the
@@ -495,39 +513,22 @@ def _find_inaccessible_faces(
     face_centres = mesh.triangles_center          # (n_faces, 3)
     face_normals = mesh.face_normals              # (n_faces, 3)
 
+    # Lift the ray origin off the surface so it neither self-intersects nor
+    # runs inside the face's own plane (the degenerate case for a wall that is
+    # parallel to the tool axis, which is the case that matters most here).
+    lift = GRID_SPACING_M * 2.0
+
     for d in directions:
         d_arr = np.array(d, dtype=float)
-        # Faces whose normal points toward this tool direction
-        dots = face_normals @ d_arr
-        candidate_faces = np.where(dots > 0.05)[0]  # 5° tolerance
+        todo = np.where(~accessible)[0]
+        if len(todo) == 0:
+            break
 
-        if len(candidate_faces) == 0:
-            continue
-
-        # Ray origins: slightly outside the face along tool approach direction
-        epsilon = GRID_SPACING_M * 2.0
-        ray_origins = face_centres[candidate_faces] + d_arr * epsilon
-        # Rays travel in -d (tool approach direction)
-        ray_dirs = np.tile(-d_arr, (len(candidate_faces), 1))
-
-        try:
-            # Check intersections: a face is accessible if its ray hits nothing
-            # before reaching the face itself (i.e. no blocking geometry)
-            hit_faces, ray_indices, _ = mesh.ray.intersects_id(
-                ray_origins=ray_origins,
-                ray_directions=ray_dirs,
-                multiple_hits=False,
-                return_locations=False,
-            )
-            # Faces whose ray hit themselves (no blocking) are accessible
-            # Ray index maps back to candidate_faces
-            blocked = set(ray_indices.tolist()) if len(ray_indices) > 0 else set()
-            for k, fi in enumerate(candidate_faces):
-                if k not in blocked:
-                    accessible[fi] = True
-        except Exception:
-            # If ray casting fails (e.g. degenerate mesh), fall back to normal check
-            accessible[candidate_faces] = True
+        origins = face_centres[todo] + face_normals[todo] * lift
+        ray_dirs = np.tile(d_arr, (len(todo), 1))
+        blocked = mesh.ray.intersects_any(ray_origins=origins,
+                                          ray_directions=ray_dirs)
+        accessible[todo[~np.asarray(blocked, dtype=bool)]] = True
 
     return np.where(~accessible)[0]
 

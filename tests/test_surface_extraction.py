@@ -166,6 +166,54 @@ def test_a_few_slivers_warn_but_a_bad_mesh_still_raises():
         "attempted; a mesh Taubin could have fixed would be accepted as-is")
 
 
+def test_accessibility_gate_answers_known_shapes_correctly():
+    """Ground the gate on two shapes whose answer is not in dispute.
+
+    Before this, _find_inaccessible_faces reported 2,919 faces / 3,330 mm^2 on
+    the car -- and 100% of that area was faces with a pure +-x normal. With
+    tools only along +-y/+-z, the old test required dot(normal, d) > 0.05, so
+    every nose and tail wall failed all four directions by construction. That
+    is a property of the tool set, not of the shape: a 3-axis cutter coming
+    down +z machines a vertical wall with the side of the tool.
+
+    Worse, the occlusion test underneath it had never run at all. trimesh's
+    intersects_id returns TWO arrays when return_locations=False; the call
+    unpacked THREE, and the ValueError was swallowed by a bare `except
+    Exception` whose handler marked every candidate accessible.
+
+    A box and a box with a sealed cavity pin both halves down: the box must be
+    entirely reachable, and the cavity must be entirely unreachable.
+    """
+    import trimesh
+
+    import surface_extraction as SE
+    from geometry_contract import TOOL_DIRECTIONS
+
+    dirs = TOOL_DIRECTIONS["main_body"]
+
+    box = trimesh.creation.box(extents=(0.1, 0.03, 0.02))
+    blocked = SE._find_inaccessible_faces(box, dirs)
+    assert len(blocked) == 0, (
+        f"{len(blocked)} of {len(box.faces)} faces of a plain rectangular "
+        "block reported unmachinable; a block is the easiest thing to mill"
+    )
+
+    inner = trimesh.creation.box(extents=(0.04, 0.012, 0.008))
+    hollow = trimesh.boolean.difference(
+        [trimesh.creation.box(extents=(0.1, 0.03, 0.02)), inner])
+    blocked_h = SE._find_inaccessible_faces(hollow, dirs)
+    assert len(blocked_h) == len(inner.faces), (
+        f"sealed cavity: expected exactly its {len(inner.faces)} faces to be "
+        f"unreachable, got {len(blocked_h)}"
+    )
+    # And they must be the cavity, not an equal number of outer faces: every
+    # blocked face must lie inside the outer box's bounds by a clear margin.
+    import numpy as np
+    centres = hollow.triangles_center[blocked_h]
+    assert (np.abs(centres[:, 0]) < 0.021).all(), (
+        "blocked faces are not the cavity walls")
+
+
 if __name__ == "__main__":
     # Collected by name. The hand-written call list this replaces printed
     # "All surface_extraction tests passed" while silently skipping every test
