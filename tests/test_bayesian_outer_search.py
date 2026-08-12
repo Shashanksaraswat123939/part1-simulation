@@ -322,3 +322,41 @@ if __name__ == "__main__":
         print("%d bayesian_outer_search test(s) FAILED." % _failed)
         _sys.exit(1)
     print("All bayesian_outer_search tests passed.")
+
+
+def test_stage1_hands_over_a_car_that_survives_the_d_halo_sweep():
+    """The seed must still be legal after Stage 2 carves its halo pocket.
+
+    Stage 1 fixes W and x_front and hands ONE field to Stage 2, which then
+    sweeps d_halo. A bigger halo offset carves a bigger pocket out of that same
+    field, so what Stage 2 starts from is lighter than what Stage 1 signed off.
+    A 0.5 g margin only guaranteed legality at the d_halo Stage 1 evaluated.
+
+    Measured 2026-08-12, one seed at 48.21 g competition remapped per d_halo:
+        16.00 -> 47.87 g   29.86 -> 47.14 g   43.72 -> 45.97 g
+    i.e. ~0.069 g per mm past d_halo 16, so the top of the sweep (71.44) loses
+    ~4.2 g and starts nearly 4 g illegal. Stage 2 then burns CFD iterations
+    climbing back instead of optimising -- d_halo 29.86 needed 14 of its 25.
+    """
+    import bayesian_outer_search as b
+
+    LOSS_PER_MM = 0.069 / 1000.0        # kg per mm of d_halo past the minimum
+    D_HALO_MIN, D_HALO_MAX = 16.0, 71.44
+
+    target = b.PROXY_MIN_MASS_KG + b.PROXY_MASS_TARGET_MARGIN_KG
+    worst_loss = LOSS_PER_MM * (D_HALO_MAX - D_HALO_MIN)
+    assert target - worst_loss >= b.PROXY_MIN_MASS_KG, (
+        f"Stage 1 aims at {target*1000:.2f} g; the widest d_halo in the sweep "
+        f"costs {worst_loss*1000:.2f} g, landing at "
+        f"{(target-worst_loss)*1000:.2f} g against a "
+        f"{b.PROXY_MIN_MASS_KG*1000:.0f} g floor. Raise "
+        f"PROXY_MASS_TARGET_MARGIN_KG.")
+
+    # And the gradient must still push UP anywhere below that target, or the
+    # margin is decorative.
+    below = b._proxy_objective_gradients(
+        target - 0.001 + b._CARTRIDGE_KG if hasattr(b, "_CARTRIDGE_KG")
+        else target - 0.001 + 0.023)
+    assert below["dT_dmass"] < 0.0, (
+        "below the target the objective must want MORE mass, got "
+        f"{below['dT_dmass']}")

@@ -313,8 +313,35 @@ PROXY_MIN_MASS_KG: float = 0.048        # T3.6, EXCLUDING the CO2 cartridge
 # The DESCENT aims above the floor; the ranking penalty still measures against
 # the floor itself. See _proxy_objective_gradients: growth velocity decays to
 # zero as the deficit closes, so aiming AT the floor converges to it from below
-# and rests fractionally illegal. Matches Part 3's T36_TARGET_MARGIN_KG.
-PROXY_MASS_TARGET_MARGIN_KG: float = 0.0005
+# and rests fractionally illegal.
+#
+# 5 g, not the 0.5 g that used to be here. 0.5 g only guarantees legality at
+# the d_halo Stage 1 itself evaluated, and Stage 2 sweeps d_halo: a bigger halo
+# offset carves a bigger pocket out of the SAME handed-over field, so the car
+# Stage 2 starts from is lighter than the one Stage 1 signed off.
+#
+# Measured 2026-08-12, one Stage 1 seed (48.21 g competition) remapped to each
+# d_halo with --independent-d-halo:
+#     d_halo 16.00   47.87 g   -0.34
+#     d_halo 29.86   47.14 g   -1.07
+#     d_halo 43.72   45.97 g   -2.24
+# ~0.069 g per mm of d_halo past 16, so the top of the sweep (71.44) loses
+# ~4.2 g. Every one of those starts ILLEGAL, and Stage 2 then spends its CFD
+# budget climbing back rather than optimising: d_halo 29.86 took 14 iterations
+# of 25 to get from 47.14 g to 47.94 g.
+#
+# Asymmetric on purpose. Stage 2 descends mass easily (that is what the
+# objective wants) and climbs it slowly (the barrier is CFL-limited), so
+# handing over a car that is too HEAVY costs a few cheap iterations while too
+# LIGHT can cost the whole budget. Aim high.
+#
+# This DELIBERATELY no longer equals Part 3's T36_TARGET_MARGIN_KG (0.5 g),
+# which the previous comment here claimed it matched. They answer different
+# questions: Part 3's is where Stage 2's barrier switches off, which should sit
+# just above the floor; this one is where Stage 1 must HAND OVER so the car is
+# still legal after the d_halo remap. Coupling them would force one of the two
+# to be wrong.
+PROXY_MASS_TARGET_MARGIN_KG: float = 0.005
 
 
 def competition_mass_kg(total_mass_kg: float) -> float:
