@@ -79,8 +79,15 @@ def _marching_cubes(phi: PhiGrid) -> "trimesh.Trimesh":
             f"[{phi.grid.min():.6f}, {phi.grid.max():.6f}]."
         )
 
+    # Samples EXACTLY on the level produce coincident/degenerate triangles;
+    # _repair_mesh then merges them and opens a hole (found 2026-09-25: a
+    # 6-edge hole at two phi == 0.0 cells made the CFD STL non-watertight).
+    # Nudge them off the level by a negligible amount.
+    grid = phi.grid
+    if (grid == 0.0).any():
+        grid = np.where(grid == 0.0, np.float32(1e-6 * dx), grid)
     verts, faces, normals, _ = measure.marching_cubes(
-        phi.grid, level=0.0, spacing=(dx, dx, dx),
+        grid, level=0.0, spacing=(dx, dx, dx),
     )
     if len(faces) == 0:
         raise SurfaceExtractionError("Empty mesh: marching cubes produced 0 faces.")
@@ -162,9 +169,16 @@ def _repair_mesh(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
             f"dropping them and refilling. If this fires, check whether the "
             f"smoothing iterations are enough for this geometry.",
             RuntimeWarning, stacklevel=2)
+        before = mesh.copy()
         mesh.update_faces(mask)
         mesh.process()
         trimesh.repair.fill_holes(mesh)
+        # Dropping a zero-area triangle can leave a hole fill_holes cannot
+        # close (found 2026-09-25: 4 degenerate faces -> a 6-edge hole -> the
+        # CFD STL failed Part 2's manifold check). A closed mesh with a few
+        # zero-area faces meshes; an open one does not. Keep the closed one.
+        if before.is_watertight and not mesh.is_watertight:
+            mesh = before
 
     return mesh
 

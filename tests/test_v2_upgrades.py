@@ -84,6 +84,27 @@ def test_wheels_are_placed_in_car_coordinates():
     assert abs(b[1, 2] - 2 * R_WHEEL_M * 1e3) < 0.3
 
 
+def test_leader_body_extracts_watertight_for_cfd():
+    """Regression: phi == 0 samples + dropped degenerate faces left a 6-edge
+    hole in the leader's half-car STL, which Part 2 rejects."""
+    from coarse import use_spacing
+    use_spacing(2.0)
+    try:
+        import bayesian_outer_search as bos
+        import unified_phi as up
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            _r, g = bos._level2_evaluate_unified(120.3, 46.0, 43.72, n_iters=100,
+                                                 output_dir=td, eval_id=0, return_geom=True)
+        use_spacing(1.0)
+        g = up.remap_geometry(g)
+        up.enforce_symmetry(g)
+        half = up.extract_half_surface(g)
+        assert half.is_watertight
+    finally:
+        use_spacing(0.3)
+
+
 def test_vectorised_splat_matches_a_loop():
     from coarse import use_spacing
     use_spacing(2.0)
