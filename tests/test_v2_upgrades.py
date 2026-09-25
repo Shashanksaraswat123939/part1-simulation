@@ -130,6 +130,33 @@ def test_vectorised_splat_matches_a_loop():
     finally:
         use_spacing(0.3)
 
+
+def test_hj_substeps_never_split_the_body():
+    """Regression 2026-09-26: six sub-steps per adjoint left 3 field bodies
+    (T4.1). A uniform erosion far past the trust radius must not add a body."""
+    from coarse import use_spacing
+    use_spacing(2.0)
+    try:
+        import bayesian_outer_search as bos
+        import phi_updater as pu
+        import tempfile
+        from scipy.ndimage import label
+        with tempfile.TemporaryDirectory() as td:
+            _r, g = bos._level2_evaluate_unified(120.3, 46.0, 43.72, n_iters=20,
+                                                 output_dir=td, eval_id=0, return_geom=True)
+        import unified_phi as up
+        half = up.extract_half_surface(g)
+        n0 = label(g.phi.grid < 0)[1]
+        sens = np.ones(len(half.vertices))      # descent = shrink everywhere
+        pu.apply_adjoint_to_unified(
+            g, sens, half, 1.0, {"w_aero": 1.0, "w_mass": 0.0},
+            {"dT_dmass": 0.0, "dT_dh_com": 0.0, "dT_dx_com": 0.0},
+            {"total_mass_kg": 0.07, "com_x_m": 0.14, "com_z_m": 0.02},
+            max_substeps=40, trust_radius_m=0.05)
+        assert label(g.phi.grid < 0)[1] <= n0
+    finally:
+        use_spacing(0.3)
+
 if __name__ == "__main__":
     _mod = sys.modules[__name__]
     _fails = 0

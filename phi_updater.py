@@ -952,11 +952,38 @@ def apply_adjoint_to_unified(
     step_dt = cfl_limited_dt(combined, dt)
     phi0 = phi.grid.astype(np.float64).copy()
     iface = np.abs(phi0) < GRID_SPACING_M
+    # T4.1 guard. Measured 2026-09-26 (CI optimise_coarse): four iterations of
+    # up to six sub-steps left 3 field bodies; the extractor kept the largest
+    # and the detached pieces vanished from the CFD while still counting as
+    # mass. After each sub-step, pieces cut off the main body are removed (a
+    # sliver the descent pinches off is neither legal nor machinable); if a
+    # piece holds pinned material the sub-step is undone and the step ends.
+    # Symmetry is imposed inside the loop so the count is the final one.
+    from scipy.ndimage import label as _label
+
+    def _drop_islands() -> bool:
+        lab, n = _label(phi.grid < 0)
+        if n <= 1:
+            return True
+        sizes = np.bincount(lab.ravel())
+        sizes[0] = 0
+        drop = (lab > 0) & (lab != sizes.argmax())
+        if (drop & phi.hard_mask_solid).any():
+            return False
+        phi.grid[drop] = GRID_SPACING_M
+        return True
+
+    ok0 = _drop_islands()        # False: pinned material already detached
     n_done, p90 = 0, 0.0
     for _k in range(max(1, int(max_substeps))):
         if step_dt <= 0:
             break
+        before = phi.grid.copy()
         hj_update(phi, combined, step_dt)
+        enforce_symmetry(geom)
+        if not _drop_islands() and ok0:
+            phi.grid = before
+            break
         n_done += 1
         if iface.any():
             p90 = float(np.percentile(np.abs(phi.grid - phi0)[iface], 90))
