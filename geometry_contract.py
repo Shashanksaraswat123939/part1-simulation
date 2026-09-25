@@ -121,6 +121,22 @@ N_WHEELS:  int   = 4
 # clearance cylinders and the T7.9 zone extents, all slightly wide.
 R_WHEEL_M: float = 0.01413        # 14.13 mm radius, measured
 
+# Rotational inertia of ONE wheel about its axle, mean of the v2 CAD front
+# (125.0 g.mm2) and rear (153.0 g.mm2) wheels at ABS 1.04 g/cm3, computed from
+# the closed CAD meshes (rnd/wheels, 2026-09-25). The race objective prices it
+# as N*I/r^2 of effective mass. Defaults of 1e-6 found elsewhere were 7x high
+# (+20 g of phantom mass). Part 4 overrides it with the designed wheel.
+WHEEL_MOI_KG_M2: float = 1.39e-7
+# Rolling/bearing coefficient: UNMEASURED placeholder, one value for every
+# caller (they previously disagreed 40x: 0.4 vs 0.010). Replace with a
+# coast-down fit.
+ROLLING_MU: float = 0.010
+
+# Official Model Block (T1.14, Appendix ii). Milled components must fit it.
+MODEL_BLOCK_LENGTH_MM: float = 223.0
+MODEL_BLOCK_WIDTH_MM: float = 65.0
+MODEL_BLOCK_HEIGHT_MM: float = 50.0
+
 # ── Halo rules (CONFIRMED by project owner) ────────────────────────────────
 HALO_MIN_Z_MM: float = 24.0       # 24 mm above track — confirmed rule
 HALO_MIN_Z_M:  float = HALO_MIN_Z_MM / 1000.0

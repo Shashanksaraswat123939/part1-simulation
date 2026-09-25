@@ -45,6 +45,15 @@ from geometry_contract import GRID_SPACING_M, mm_to_m
 FRONT_INNER_GAP_MIN_MM: float = 38.0   # T7.2.1
 REAR_INNER_GAP_MIN_MM: float = 30.0    # T7.2.2
 
+# T7.9 is measured "from the inside edges of each wheels' track contact width",
+# i.e. from where the wheels ACTUALLY are, not from the T7.2 minimum gap.
+# Anchoring on the minimum put the front zones 4.25 mm too far inboard (wheel
+# inner face at 23.25 mm, minimum half-gap 19.0) and the rear 1.25 mm, forbidding
+# body volume the rule allows. Defaults now follow the fitted wheels.
+from geometry_contract import FRONT_WHEEL_INNER_Y_MM as _FWY, REAR_WHEEL_INNER_Y_MM as _RWY  # noqa: E402
+FRONT_INNER_GAP_ACTUAL_MM: float = 2.0 * _FWY
+REAR_INNER_GAP_ACTUAL_MM: float = 2.0 * _RWY
+
 # T7.9 zone dimensions (mm), read from the regulation diagram (T7.9, page 32).
 T79_RECT_DEPTH_MM: float = 5.0     # T7.9.1 / T7.9.4 rectangle x-depth
 T79_FRONT_LEG_X_MM: float = 15.0   # T7.9.2 horizontal leg (aft of front wheel)
@@ -132,8 +141,8 @@ def build_t79_forbidden_mask(
     W_mm: float,
     x_front_mm: float,
     wheel_x_half_width_mm: float = 8.0,
-    front_inner_gap_mm: float = FRONT_INNER_GAP_MIN_MM,
-    rear_inner_gap_mm: float = REAR_INNER_GAP_MIN_MM,
+    front_inner_gap_mm: float = FRONT_INNER_GAP_ACTUAL_MM,
+    rear_inner_gap_mm: float = REAR_INNER_GAP_ACTUAL_MM,
 ) -> Optional[np.ndarray]:
     """
     Build the T7.9 forbidden-zone mask for one component's grid.

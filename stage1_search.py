@@ -72,7 +72,7 @@ CargoScorer = Callable[[float, float, float], float]
 
 def make_race_objective_cargo_scorer(
     thrust_csv_path: str, nominal_D20_n: float,
-    mu: float = 0.010, wheel_moi_kg_m2: float = 1e-7,
+    mu: float = 0.010, wheel_moi_kg_m2: float = 1.39e-7,
 ) -> CargoScorer:
     """Build a cargo scorer from the REAL race objective at a FIXED nominal drag.
 

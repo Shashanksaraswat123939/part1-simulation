@@ -356,14 +356,16 @@ def _splat_vertex_sensitivity_to_grid(
     velocity = np.zeros((nx, ny, nz), dtype=np.float64)
     counts   = np.zeros((nx, ny, nz), dtype=np.int32)
 
-    for vi in range(len(vertices)):
-        x, y, z = vertices[vi]
-        ci = int(round((x - ox) / dx))
-        cj = int(round((y - oy) / dx))
-        ck = int(round((z - oz) / dx))
-        if 0 <= ci < nx and 0 <= cj < ny and 0 <= ck < nz:
-            velocity[ci, cj, ck] += float(vertex_sensitivity[vi])
-            counts[ci, cj, ck] += 1
+    # Vectorised (np.add.at) -- the per-vertex Python loop this replaces ran
+    # twice per iteration over ~50-1000k vertices. Same rounding, same average.
+    v = np.asarray(vertices, dtype=np.float64)
+    idx = np.rint((v - np.array([ox, oy, oz])) / dx).astype(np.int64)
+    ok = ((idx[:, 0] >= 0) & (idx[:, 0] < nx) & (idx[:, 1] >= 0) & (idx[:, 1] < ny)
+          & (idx[:, 2] >= 0) & (idx[:, 2] < nz))
+    idx = idx[ok]
+    vals = np.asarray(vertex_sensitivity, dtype=np.float64)[ok]
+    np.add.at(velocity, (idx[:, 0], idx[:, 1], idx[:, 2]), vals)
+    np.add.at(counts, (idx[:, 0], idx[:, 1], idx[:, 2]), 1)
 
     # Average where multiple vertices hit the same cell
     nonzero = counts > 0
@@ -630,8 +632,20 @@ def apply_adjoint_to_unified(
     gradient_weights: dict,
     objective_gradients: dict,
     mass_report,
-) -> None:
+    max_substeps: int = 1,
+    trust_radius_m: float = 1.0e-3,
+) -> dict:
     """Evolve the SINGLE unified field with the CFD adjoint + real objective.
+
+    STEP CONTROL (2026-09-25, measured in rnd/step_size on the real adjoint):
+      * dt is sized on the p90 of |V| over the interface band, with |V| clipped
+        at 3x that. Sizing on the maximum let a few cells (the 1000 kg/m3 nose,
+        adjoint speckle) set the step for 8M cells: the production step moved
+        the surface 0.049 mm median against a 0.30 mm cap.
+      * Up to `max_substeps` HJ steps are taken on ONE adjoint, stopping when
+        the p90 interface displacement reaches `trust_radius_m` (keep it below
+        one CFD cell). Five sub-steps measured 0.45 mm median, 9x production.
+    Returns a small dict of step diagnostics.
 
     The four-grid `apply_adjoint_sensitivity_symmetric` splats onto four
     separate grids. This does the same on the one labelled field:
@@ -930,12 +944,24 @@ def apply_adjoint_to_unified(
     # 0.3). Clip to a high percentile so the smooth descent that carries the
     # real mass/drag/COM signal actually advances.
     absc = np.abs(combined)
-    nz = absc[absc > 0]
-    if nz.size:
-        cap = float(np.percentile(nz, 99.9))   # trim only the wildest artifacts
+    _bandv = absc[_band & (absc > 0)]
+    if _bandv.size:
+        cap = 3.0 * float(np.percentile(_bandv, 90))
         if cap > 0:
             combined = np.clip(combined, -cap, cap)
-    hj_update(phi, combined, cfl_limited_dt(combined, dt))
+    step_dt = cfl_limited_dt(combined, dt)
+    phi0 = phi.grid.astype(np.float64).copy()
+    iface = np.abs(phi0) < GRID_SPACING_M
+    n_done, p90 = 0, 0.0
+    for _k in range(max(1, int(max_substeps))):
+        if step_dt <= 0:
+            break
+        hj_update(phi, combined, step_dt)
+        n_done += 1
+        if iface.any():
+            p90 = float(np.percentile(np.abs(phi.grid - phi0)[iface], 90))
+            if p90 >= trust_radius_m:
+                break
     enforce_symmetry(geom)
 
     # Void no tool can reach is not void. Stage 1 has applied this since it was
@@ -955,4 +981,9 @@ def apply_adjoint_to_unified(
     # AFTER enforce_symmetry, not before: _clear_run ORs +y and -y, so the
     # reachable set of a y-symmetric field is itself y-symmetric and this cannot
     # break the symmetry the line above just imposed.
-    enforce_machinability(geom)
+    filled = enforce_machinability(geom)
+    moved = np.abs(phi.grid - phi0)[iface] if iface.any() else np.zeros(1)
+    return {"substeps": n_done, "dt": step_dt,
+            "disp_median_m": float(np.median(moved)),
+            "disp_p90_m": float(np.percentile(moved, 90)),
+            "machinability_filled": int(filled)}

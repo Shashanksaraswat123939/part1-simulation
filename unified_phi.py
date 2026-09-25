@@ -83,7 +83,12 @@ from wheel_visibility_zones import build_t79_forbidden_mask
 # Extra keep-out around each wheel, on top of the 2 mm assembly clearance, so
 # the body stands clearly off the wheels (outrigger look, unambiguous top-view
 # visibility) instead of crowding right against them.
-WHEEL_KEEPOUT_MARGIN_M: float = 0.004   # 4 mm
+WHEEL_KEEPOUT_MARGIN_M: float = 0.0     # was 4 mm (2026-09-25)
+# The 4 mm was an aesthetic choice ("outrigger look"), not a rule, and it cut
+# the T5.5 chamber wall to 1.25-2.0 mm at the rear axle (3.0 mm required,
+# SAFETY). CFD with wheels (rnd-cfd round 2) showed the body's width around the
+# wheels is an aerodynamic variable -- a narrower body let the rear wheels see
+# more flow and the car got slower -- so the body is free to decide it.
 
 LABEL_NONE: int = 0
 LABEL_NOSE: int = 1
@@ -126,6 +131,10 @@ class UnifiedGeometry:
     # at runtime -- so by the time a geometry is remapped onto a finer grid, the
     # global no longer describes the geometry in hand. remap_geometry needs both.
     spacing_m: float = 0.0
+    # Cells of the T5.5 wall that a design-choice void tried to delete and the
+    # builder kept solid. Non-zero is fine (the wall won); it is reported so a
+    # mask collision is visible rather than silent.
+    t55_cells_protected: int = 0
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -615,10 +624,11 @@ def build_unified_geometry(
         # all. A deleted function once slipped through exactly here because
         # ImportError was swallowed. Let it raise.
         from fixed_hardware import canister_safety_zone_solid_mask
-        hard_solid |= canister_safety_zone_solid_mask(
+        t55_zone = canister_safety_zone_solid_mask(
             getattr(fixed_hardware, "canister_cylinder", None),
             region.origin_m, region.shape, GRID_SPACING_M,
         )
+        hard_solid |= t55_zone
 
     # The lofted deck itself. The ceiling above (halo_canister_loft_air_mask)
     # only bounds the surface; with no aero term in Stage 1's proxy, mass
@@ -664,6 +674,18 @@ def build_unified_geometry(
                 "zone, cartridge bore or ballast slot. The car would not contain "
                 "the mandatory cargo volume."
             )
+    # T5.5 is a SAFETY regulation: the 3 mm wall around the chamber outranks
+    # every design-choice void (wheel keep-clear, loft ceiling). Only the bore
+    # itself may be air. Before this, "air wins" silently deleted 320 wall
+    # cells and left a 1.25-2.0 mm wall at the rear axle.
+    t55_overridden = 0
+    if fixed_hardware is not None:
+        _protect = t55_zone & ~fixed_hardware.canister_void_mask
+        _protect[0, :, :] = _protect[-1, :, :] = False
+        _protect[:, 0, :] = _protect[:, -1, :] = False
+        _protect[:, :, 0] = _protect[:, :, -1] = False
+        t55_overridden = int((_protect & hard_air).sum())
+        hard_air &= ~_protect
     hard_solid &= ~hard_air
 
     phi = PhiGrid("car", region, np.zeros(region.shape, dtype=np.float32),
@@ -688,6 +710,7 @@ def build_unified_geometry(
         d_halo_mm=d_halo_mm,
         fixed_hardware=fixed_hardware,
         spacing_m=GRID_SPACING_M,
+        t55_cells_protected=t55_overridden,
     )
 
 
@@ -1057,8 +1080,14 @@ def extract_unified_surface(
     SE._check_rules(mesh, geom.region)
     SE._check_mesh_quality(mesh, "car")
 
+    # T4.1 connectivity counted on the FIELD. The mesh count below is taken
+    # after _repair_mesh keeps only the largest component, so it is always 1 --
+    # a detached sidepod vanished from the STL while still counting as mass.
+    from scipy.ndimage import label as _label
+    _, n_field_bodies = _label(geom.phi.grid < 0)
     report = {
         "inaccessible_area_mm2": {k: v * 1e6 for k, v in areas.items()},
+        "field_bodies": int(n_field_bodies),
         "connected_bodies": len(mesh.split(only_watertight=False)),
         "watertight": bool(mesh.is_watertight),
         "volume_cm3": float(mesh.volume * 1e6),

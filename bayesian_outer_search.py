@@ -153,8 +153,8 @@ class SearchConfig:
     thrust_csv_path:  Optional[str] = None
     fixed_hardware_kwargs: Optional[dict] = None
     gradient_weights: "object" = None          # optimizer_contract.GradientWeights
-    mu:               float = 0.4
-    wheel_moi_kg_m2:  float = 1e-6
+    mu:               float = 0.010     # geometry_contract.ROLLING_MU (was 0.4)
+    wheel_moi_kg_m2:  float = 1.39e-7   # geometry_contract.WHEEL_MOI_KG_M2 (was 1e-6)
     rtc_validated_against_track_data: bool = False
     cfd_pipeline_validated_on_known_geometry: bool = False
     n_candidates_per_point: int = 3     # M, evolutionary population size per outer point
@@ -341,7 +341,15 @@ PROXY_MIN_MASS_KG: float = 0.048        # T3.6, EXCLUDING the CO2 cartridge
 # just above the floor; this one is where Stage 1 must HAND OVER so the car is
 # still legal after the d_halo remap. Coupling them would force one of the two
 # to be wrong.
-PROXY_MASS_TARGET_MARGIN_KG: float = 0.005
+PROXY_MASS_TARGET_MARGIN_KG: float = 0.0002
+# ^ 2026-09-25: back to one scale digit. The 5 g margin existed because foam was
+# the only way to recover mass lost when Stage 2 remaps the seed to a larger
+# d_halo (up to ~4.2 g). Legal ballast (ballast.py) now absorbs that loss --
+# lead in the capsule holds ~15.8 g -- so the seed no longer has to carry it.
+#
+# Ballast material used by the proxy. None disables ballast (legacy behaviour).
+import ballast as _ballast  # noqa: E402
+BALLAST_MATERIAL = _ballast.DEFAULT_MATERIAL
 
 
 def competition_mass_kg(total_mass_kg: float) -> float:
@@ -408,6 +416,16 @@ def _proxy_objective_gradients(total_mass_kg: float) -> dict[str, float]:
     design wins; this decides which way the shape moves. Part 3's
     t36_descent_gradient does the same thing for the real objective.
     """
+    if BALLAST_MATERIAL is not None:
+        # total_mass_kg is the car WITHOUT ballast. The ballast absorbs any
+        # shortfall up to capacity, so the mass push on the skin vanishes in
+        # that regime; see ballast.shape_dT_dmass.
+        return {
+            "dT_dmass": _ballast.shape_dT_dmass(
+                PROXY_W_MASS / PROXY_MASS_REF_KG, total_mass_kg, BALLAST_MATERIAL),
+            "dT_dh_com": PROXY_W_HCOM / PROXY_HCOM_REF_M,
+            "dT_dx_com": 0.0,
+        }
     _m = competition_mass_kg(total_mass_kg)
     _target = PROXY_MIN_MASS_KG + PROXY_MASS_TARGET_MARGIN_KG
     if _m < _target:
@@ -533,7 +551,13 @@ def _unified_mass_com_state(geom) -> Optional[dict]:
              + sum(m * x for m, x, _z in fixed)) / total
     com_z = (sum(c.mass_kg * c.com_z_m for c in components)
              + sum(m * z for m, _x, z in fixed)) / total
-    return {"total_mass_kg": total, "com_x_m": com_x, "com_z_m": max(com_z, 1e-4)}
+    state = {"total_mass_kg": total, "com_x_m": com_x, "com_z_m": max(com_z, 1e-4)}
+    if BALLAST_MATERIAL is None:
+        state["mass_without_ballast_kg"] = total
+        state["ballast_kg"] = 0.0
+        return state
+    return _ballast.add_to_state(state, geom.landmarks["ref_plane_A_m"],
+                                 geom.d_halo_mm, BALLAST_MATERIAL)
 
 
 def _level2_evaluate_unified(
@@ -592,7 +616,8 @@ def _level2_evaluate_unified(
         state = _unified_mass_com_state(geom)
         if state is None:
             break
-        grads = _proxy_objective_gradients(state["total_mass_kg"])
+        grads = _proxy_objective_gradients(
+            state.get("mass_without_ballast_kg", state["total_mass_kg"]))
         velocity = scalar_objective_velocity(geom.phi, rho, grads, state)
         hj_update(geom.phi, velocity, cfl_limited_dt(velocity, PROXY_HJ_DT))
         if (it + 1) % 10 == 0:
@@ -880,6 +905,8 @@ def _level2_evaluate(
             z_com = 0.020
         h_com = max(z_com, 0.001)
 
+    if BALLAST_MATERIAL is not None:
+        total_mass = total_mass + _ballast.ballast_kg(total_mass, BALLAST_MATERIAL)
     # Proxy race time. The barrier term is what the evolution loop's mass
     # gradient descends against -- see _proxy_objective_gradients.
     T_proxy = (
