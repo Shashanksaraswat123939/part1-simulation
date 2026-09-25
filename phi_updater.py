@@ -634,6 +634,7 @@ def apply_adjoint_to_unified(
     mass_report,
     max_substeps: int = 1,
     trust_radius_m: float = 1.0e-3,
+    aero_smooth_m: float = 0.0,
 ) -> dict:
     """Evolve the SINGLE unified field with the CFD adjoint + real objective.
 
@@ -849,6 +850,14 @@ def apply_adjoint_to_unified(
     vel_l = _splat_vertex_sensitivity_to_grid(sens, verts_l, phi)
     surface_vel = (vel_r + vel_l) * 0.5
     aero_v = extend_velocity(phi.grid.astype(np.float64), surface_vel)
+    # Gaussian filter of the aero velocity (sigma = aero_smooth_m). Measured
+    # 2026-09-26 (sign_check, coarse, all parts): the raw step moved the skin
+    # 0.075 mm median / 0.70 mm p90 and raised drag in BOTH directions
+    # (+3.0 % along -grad, +5.4 % along +grad): the sign is right, but spikes
+    # from the vertex splat add more roughness drag than the descent removes.
+    if aero_smooth_m > 0:
+        from scipy.ndimage import gaussian_filter
+        aero_v = gaussian_filter(aero_v, aero_smooth_m / GRID_SPACING_M)
 
     # Mass/COM velocity from the real objective's scalar gradients.
     rho = density_field(geom)
