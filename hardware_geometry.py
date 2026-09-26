@@ -111,6 +111,25 @@ def _to_metres(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
     return m
 
 
+def _axle_along_y(mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
+    """Rotate a wheel mesh so its axle (thinnest bounding extent) lies along y."""
+    import trimesh
+    ext = mesh.bounds[1] - mesh.bounds[0]
+    ax = int(np.argmin(ext))
+    if ax == 1:
+        return mesh.copy()
+    m = mesh.copy()
+    other = [0, 2] if ax == 1 else [i for i in (0, 1, 2) if i != ax]
+    perm = [other[0], ax, other[1]]           # new (x, y, z) <- old columns
+    m.vertices = m.vertices[:, perm]
+    # A column swap is a reflection; keep outward normals outward.
+    parity = sum(1 for i in range(3) for j in range(i + 1, 3) if perm[i] > perm[j]) % 2
+    if parity:
+        m.invert()
+    trimesh.repair.fix_normals(m)
+    return m
+
+
 def _check_measured(name: str, measured_mm: float, expected_mm: float, tol_mm: float = 0.5) -> None:
     if abs(measured_mm - expected_mm) > tol_mm:
         raise AssertionError(
@@ -140,20 +159,26 @@ def build_wheel_assembly(axle: str, x_target_mm: float) -> dict[str, "trimesh.Tr
     support = _load("front_wheel_support.stl" if axle == "front" else "rear_wheel_support.stl")
     expected_inner_y_mm = FRONT_WHEEL_INNER_Y_MM if axle == "front" else REAR_WHEEL_INNER_Y_MM
 
+    from geometry_contract import FRONT_WHEEL_WIDTH_MM, REAR_WHEEL_WIDTH_MM
+    wheel = _axle_along_y(wheel)
     wb = wheel.bounds   # (2,3): [min,max] x [x,y,z]
-    x_center_mm = (wb[0, 0] + wb[1, 0]) / 2.0
-    z_min_mm = wb[0, 2]
     width_mm = wb[1, 1] - wb[0, 1]
-    inner_y_mm = -wb[1, 1]   # native y<=0: inner (track-contact) face is the less-negative bound
+    expected_width = FRONT_WHEEL_WIDTH_MM if axle == "front" else REAR_WHEEL_WIDTH_MM
+    _check_measured(f"{axle} wheel width", width_mm, expected_width)
 
-    _check_measured(f"{axle} wheel width", width_mm, WHEEL_WIDTH_MM)
-    _check_measured(f"{axle} wheel inner-face y", inner_y_mm, expected_inner_y_mm, tol_mm=1.0)
-
-    dx_mm = x_target_mm - x_center_mm
-    dz_mm = -z_min_mm   # sub-mm cleanup so the tyre exactly touches z=0
-
-    left_wheel = _to_metres(_translate_mm(wheel, dx_mm, 0.0, dz_mm))
-    left_support = _to_metres(_translate_mm(support, dx_mm, 0.0, dz_mm))
+    # The v2 wheel STLs are NOT in car coordinates (axle along x, centred far
+    # from the car), so place them from the geometry contract rather than from
+    # their own bounds: disc centred on the axle, tyre on z=0, inner face at
+    # -inner_y on the native (left, y<=0) side. The supports ARE in car
+    # coordinates and only need the x shift.
+    wheel = _translate_mm(wheel,
+                          x_target_mm - (wb[0, 0] + wb[1, 0]) / 2.0,
+                          -expected_inner_y_mm - wb[1, 1],
+                          -wb[0, 2])
+    sb = support.bounds
+    left_wheel = _to_metres(wheel)
+    left_support = _to_metres(_translate_mm(
+        support, x_target_mm - (sb[0, 0] + sb[1, 0]) / 2.0, 0.0, 0.0))
     right_wheel = _negate_y(left_wheel)
     right_support = _negate_y(left_support)
 

@@ -400,7 +400,11 @@ def compute_bounding_volumes(
     # origin now lines up exactly where the wheel's disc footprint ends,
     # with T7.9.4 carving out its own additional 5mm beyond that.
     rearpod_x_start_m = rear_axle_m + mm_to_m(wheel_x_half_width_mm)
-    rp_x_mm = re.rearpod_max_length_m * 1000
+    # T9.4.2 measures the overhang from Ref Plane B (rear axle + 16 mm), not
+    # from where the pod starts. Using the full 40 mm from the pod start put
+    # the rear face at Ref B + 40.13 mm, 0.13 mm over the limit (2026-09-25).
+    ref_B_m = rear_axle_m + 0.016
+    rp_x_mm = (ref_B_m + re.rearpod_max_length_m - rearpod_x_start_m) * 1000
     rp_y_mm = re.y_body_half_m * 2 * 1000
     rp_z_mm = (re.z_rearpod_top_m - re.z_floor_m) * 1000
     rearpod_origin_m = (rearpod_x_start_m, -re.y_body_half_m, re.z_floor_m)
@@ -554,11 +558,16 @@ def default_rule_envelope() -> "RuleEnvelope":
         y_body_half_m=0.028,
         y_nose_half_m=0.015,
         y_sidepod_inner_m=0.028,
-        y_sidepod_outer_m=0.0355,
+        # BLOCK-LIMITED (2026-09-25). The milled body must come out of the
+        # 223 x 65 x 50 mm Model Block (T3.1.2, T1.14). The old envelope allowed
+        # 71 mm wide (y_sidepod_outer 35.5) and 63.5 mm tall milled material,
+        # which fits the block in no orientation. T3.5's 65 mm is the assembled
+        # car (halo, wings), not the milled body.
+        y_sidepod_outer_m=0.0325,
         z_floor_m=0.0015,
         z_nose_top_m=0.025,
-        z_sidepod_top_m=0.065,
-        z_rearpod_top_m=0.065,
-        z_body_top_m=0.065,
+        z_sidepod_top_m=0.0515,
+        z_rearpod_top_m=0.0515,
+        z_body_top_m=0.0515,
         rearpod_max_length_m=0.040,
     )

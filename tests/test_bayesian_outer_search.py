@@ -268,6 +268,17 @@ def test_the_proxy_descent_rests_legal_not_just_near_the_floor():
     t36_mass_barrier and is fixed the same way.
     """
     import bayesian_outer_search as b
+    # This test is about the NO-BALLAST barrier path; the ballast path is
+    # covered by test_v2_upgrades.
+    _saved, b.BALLAST_MATERIAL = b.BALLAST_MATERIAL, None
+    try:
+        _run_no_ballast_descent(b)
+    finally:
+        b.BALLAST_MATERIAL = _saved
+    _pass("test_the_proxy_descent_rests_legal_not_just_near_the_floor")
+
+
+def _run_no_ballast_descent(b):
     cartridge = 0.023
     for start in (0.0469, 0.0440, 0.0300):
         m = start
@@ -278,7 +289,6 @@ def test_the_proxy_descent_rests_legal_not_just_near_the_floor():
             f"competition mass, under the {b.PROXY_MIN_MASS_KG*1000:.0f} g "
             f"floor -- the barrier is cancelling against the mass term instead "
             f"of replacing it")
-    _pass("test_the_proxy_descent_rests_legal_not_just_near_the_floor")
 
 
 def test_the_proxy_ranking_penalty_still_uses_the_true_floor():
@@ -338,25 +348,24 @@ def test_stage1_hands_over_a_car_that_survives_the_d_halo_sweep():
     ~4.2 g and starts nearly 4 g illegal. Stage 2 then burns CFD iterations
     climbing back instead of optimising -- d_halo 29.86 needed 14 of its 25.
     """
+    import ballast as bl
     import bayesian_outer_search as b
 
     LOSS_PER_MM = 0.069 / 1000.0        # kg per mm of d_halo past the minimum
     D_HALO_MIN, D_HALO_MAX = 16.0, 71.44
-
-    target = b.PROXY_MIN_MASS_KG + b.PROXY_MASS_TARGET_MARGIN_KG
     worst_loss = LOSS_PER_MM * (D_HALO_MAX - D_HALO_MIN)
-    assert target - worst_loss >= b.PROXY_MIN_MASS_KG, (
-        f"Stage 1 aims at {target*1000:.2f} g; the widest d_halo in the sweep "
-        f"costs {worst_loss*1000:.2f} g, landing at "
-        f"{(target-worst_loss)*1000:.2f} g against a "
-        f"{b.PROXY_MIN_MASS_KG*1000:.0f} g floor. Raise "
-        f"PROXY_MASS_TARGET_MARGIN_KG.")
 
-    # And the gradient must still push UP anywhere below that target, or the
-    # margin is decorative.
-    below = b._proxy_objective_gradients(
-        target - 0.001 + b._CARTRIDGE_KG if hasattr(b, "_CARTRIDGE_KG")
-        else target - 0.001 + 0.023)
-    assert below["dT_dmass"] < 0.0, (
-        "below the target the objective must want MORE mass, got "
-        f"{below['dT_dmass']}")
+    # With legal ballast the remap loss is absorbed by the capsule, so the seed
+    # no longer has to carry a 5 g foam margin. The capsule must hold it.
+    target = b.PROXY_MIN_MASS_KG + b.PROXY_MASS_TARGET_MARGIN_KG
+    assert target - worst_loss + bl.capacity_kg(b.BALLAST_MATERIAL) >= b.PROXY_MIN_MASS_KG, (
+        "the ballast capsule cannot absorb the worst d_halo remap loss")
+    # And the shape gradient must push material back only once the capsule is
+    # exhausted, never while ballast can still absorb the difference.
+    cap = bl.capacity_kg(b.BALLAST_MATERIAL)
+    inside = b._proxy_objective_gradients(target - 0.001 + 0.023)
+    assert inside["dT_dmass"] == 0.0
+    beyond = b._proxy_objective_gradients(target - cap - 0.001 + 0.023)
+    assert beyond["dT_dmass"] < 0.0
+    _pass("test_stage1_hands_over_a_car_that_survives_the_d_halo_sweep")
+
