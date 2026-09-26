@@ -850,7 +850,10 @@ def canister_safety_zone_solid_mask(canister_cylinder,
     zs = o[2] + _np.arange(nz) * d_m
 
     x0 = canister_cylinder.x_center_m - canister_cylinder.x_half_width_m
-    in_x = (xs >= x0) & (xs <= x0 + mm_to_m(CANISTER_SAFETY_ZONE_LENGTH_MM))
+    # From one cell BEFORE x0: the end cap below stops at x0 - d, so the cell
+    # straddling x0 was in neither, and the optimiser thinned the wall there to
+    # 2.5 mm (2026-09-26). The annulus spares r < inner, so the bore is intact.
+    in_x = (xs >= x0 - d_m) & (xs <= x0 + mm_to_m(CANISTER_SAFETY_ZONE_LENGTH_MM))
     r = _np.sqrt((ys[:, None] - canister_cylinder.y_center_m) ** 2
                  + (zs[None, :] - canister_cylinder.z_center_m) ** 2)
 
