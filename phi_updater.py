@@ -750,7 +750,17 @@ def apply_adjoint_to_unified(
     # adjoint at all. Negating the whole gradient moved the geometry by 0.369
     # mm^3 of a 932 mm^3 step -- 0.04%. A sign that moves nothing cannot be
     # validated by what moves.
-    sens = -sens
+    #
+    # FLIPPED 2026-09-26: `sens = -sens` removed. OpenFOAM's pointSensNormal is
+    # taken along the boundary normal, which points OUT OF THE FLUID, i.e.
+    # INTO the car -- so the raw field is dJ/d(inward), and F = +sens is the
+    # descent. Measured with the inlet fix, all parts in the flow, coarse
+    # (part5 sign_check / optimise_coarse on GitHub Actions):
+    #   * every one of 9 aero-only iterations in three optimise runs RAISED
+    #     D20 (e.g. 0.393 -> 0.401 -> 0.408 N);
+    #   * one step each way, 4 pairs: the old "descent" beat the old "ascent"
+    #     in 1 of 4 (mean +3.2 % vs +1.6 % D20 over base).
+    # The 2026-07-27 check above was inside noise at Re ~ 30.
 
     # OUTLIER GUARD. combine_gradients normalises each gradient to unit RMS, so
     # a heavy-tailed sensitivity does not merely add noise -- it deletes the
