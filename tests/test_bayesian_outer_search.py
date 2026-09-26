@@ -363,8 +363,11 @@ def test_stage1_hands_over_a_car_that_survives_the_d_halo_sweep():
     # And the shape gradient must push material back only once the capsule is
     # exhausted, never while ballast can still absorb the difference.
     cap = bl.capacity_kg(b.BALLAST_MATERIAL)
-    inside = b._proxy_objective_gradients(target - 0.001 + 0.023)
+    # Within the build reserve the body still carves; past it ballast absorbs.
+    inside = b._proxy_objective_gradients(target - bl.BUILD_RESERVE_KG - 0.001 + 0.023)
     assert inside["dT_dmass"] == 0.0
+    reserve = b._proxy_objective_gradients(target - bl.BUILD_RESERVE_KG / 2 + 0.023)
+    assert reserve["dT_dmass"] > 0.0
     beyond = b._proxy_objective_gradients(target - cap - 0.001 + 0.023)
     assert beyond["dT_dmass"] < 0.0
     _pass("test_stage1_hands_over_a_car_that_survives_the_d_halo_sweep")

@@ -45,6 +45,11 @@ T36_FLOOR_KG: float = 0.048
 # One scale digit (T2.8: 47.9 fails) plus machining scatter.
 TARGET_MARGIN_KG: float = 0.0002
 CARTRIDGE_KG: float = 0.023
+# Ballast kept in hand for the build: printed parts and glue come out heavier
+# than CAD, and a car with no ballast left is over 48.2 g and ~17 ms/g slower
+# (race objective, 2026-09-26). The body keeps carving until at least this much
+# ballast is needed; within it the ballast absorbs changes as before.
+BUILD_RESERVE_KG: float = 0.0015
 
 # Appendix ix capsule. Duplicated from halo_pocket so this module has no grid
 # dependency; test_ballast asserts they agree.
@@ -130,7 +135,7 @@ def shape_dT_dmass(dT_dmass_physics: float, total_without_ballast_kg: float,
     comp = total_without_ballast_kg - CARTRIDGE_KG
     target = target_competition_kg()
     cap = capacity_kg(material)
-    if comp >= target:                      # heavy: no ballast, physics applies
+    if comp >= target - BUILD_RESERVE_KG:   # heavy, or inside the build reserve
         return dT_dmass_physics
     if comp + cap >= target:                # ballast absorbs the difference
         return 0.0
@@ -147,6 +152,6 @@ def describe(total_without_ballast_kg: float, material: str = DEFAULT_MATERIAL) 
         "ballast_g": b * 1e3,
         "competition_mass_g": comp * 1e3,
         "legal_T36": comp >= T36_FLOOR_KG - 1e-9,
-        "regime": ("heavy" if b == 0.0 and comp > target_competition_kg() - 1e-12
-                   else "full" if abs(b - capacity_kg(material)) < 1e-12 else "absorbing"),
+        "regime": ("full" if abs(b - capacity_kg(material)) < 1e-12
+                   else "heavy" if b < BUILD_RESERVE_KG - 1e-12 else "absorbing"),
     }
