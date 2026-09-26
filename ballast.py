@@ -49,7 +49,13 @@ CARTRIDGE_KG: float = 0.023
 # than CAD, and a car with no ballast left is over 48.2 g and ~17 ms/g slower
 # (race objective, 2026-09-26). The body keeps carving until at least this much
 # ballast is needed; within it the ballast absorbs changes as before.
-BUILD_RESERVE_KG: float = 0.0015
+#
+# 0.5 g from the part5 sweep (round 8, medium mesh, each value run twice and
+# repeating to 0.2 %): reserve 0.5 g -> D20 0.3887 N, 3 g 0.3937, 5 g 0.400,
+# 8 g 0.3995, 1.5 g 0.4046. The carve depth changes the body shape, and not
+# monotonically, so the value is measured, not reasoned; it leaves ~1.1 g of
+# ballast in hand.
+BUILD_RESERVE_KG: float = 0.0005
 
 # Appendix ix capsule. Duplicated from halo_pocket so this module has no grid
 # dependency; test_ballast asserts they agree.
