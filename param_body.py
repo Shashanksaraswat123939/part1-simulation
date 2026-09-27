@@ -16,8 +16,8 @@ Shape, all in mm, car coordinates (x nose->tail, z up from the track):
   fuselage   superellipse sections |y/b|^p + |(z-zc)/h|^p <= 1 lofted through
              three stations -- Ref A, the maximum section at x_max, the rear
              face -- easing out of the first and into the last, so the loft is
-             smooth with zero slope at the maximum; plus an elliptic nose cap
-             `nose_len` ahead of Ref A.
+             smooth with zero slope at the maximum. The body ends at Ref A;
+             the nose cone ahead of it is a printed part (Part 4 nose.py).
   sidepods   a second, wide and low superellipse loft over [s_x0, s_x1] with
              `s_taper` mm ease at each end: what encloses the 52 mm T4.2 cargo.
   floor      an optional flat plate (f_b > 0) of thickness f_t at height f_z,
@@ -34,7 +34,7 @@ import numpy as np
 @dataclass(frozen=True)
 class BodyParams:
     # fuselage
-    nose_len: float = 8.0
+    nose_len: float = 8.0         # unused: the nose is a Part 4 printed part now
     n_b: float = 10.0
     n_zt: float = 20.0
     n_zb: float = 6.0
@@ -75,7 +75,7 @@ class BodyParams:
 # y <= 20 ahead of x~80, <= 32 around the cargo, z 4..48) and the mandatory
 # solids (cargo y +-26, z 16-24, x 78-136; cartridge wall to z 47, y +-12).
 BOUNDS = {
-    "nose_len": (0.0, 15.0), "n_b": (6.0, 14.5), "n_zt": (14.0, 24.0), "n_zb": (4.0, 12.0),
+    "n_b": (6.0, 14.5), "n_zt": (14.0, 24.0), "n_zb": (4.0, 12.0),
     "x_max_frac": (0.2, 0.6), "m_b": (12.0, 20.0), "m_zt": (22.0, 42.0), "m_zb": (4.0, 12.0),
     "r_b": (12.5, 20.0), "r_zt": (47.0, 48.0), "r_zb": (4.0, 23.0), "p": (2.0, 4.0),
     "s_b": (26.5, 31.5), "s_zt": (24.5, 34.0), "s_zb": (4.0, 15.5),
@@ -115,28 +115,12 @@ def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float, must=None):
     b = np.where(front, _ease(bp.n_b, bp.m_b, u1, False), _ease(bp.m_b, bp.r_b, u2, True))
     zt = np.where(front, _ease(bp.n_zt, bp.m_zt, u1, False), _ease(bp.m_zt, bp.r_zt, u2, True))
     zb = np.where(front, _ease(bp.n_zb, bp.m_zb, u1, False), _ease(bp.m_zb, bp.r_zb, u2, True))
-    # elliptic nose cap ahead of Ref A
-    if bp.nose_len > 0:
-        t = np.clip((x_ref_a - X) / bp.nose_len, 0.0, 1.0)
-        k = np.sqrt(np.clip(1.0 - t * t, 0.0, 1.0))
-        b = np.where(X < x_ref_a, bp.n_b * k, b)
-        zc_n = 0.5 * (bp.n_zt + bp.n_zb)
-        h_n = 0.5 * (bp.n_zt - bp.n_zb) * k
-        zt = np.where(X < x_ref_a, zc_n + h_n, zt)
-        zb = np.where(X < x_ref_a, zc_n - h_n, zb)
-    if bp.f_b > 0:
-        # A floor is the car's flat underside: the fuselage comes down to it,
-        # or the plate would float (T4.1) under a high-bottomed body.
-        zb = np.minimum(zb, bp.f_z)
-    if must is not None:
-        mb, mt, mz = must                                 # arrays over X[:, 0, 0]
-        b = np.maximum(b, mb[:, None, None])
-        zt = np.maximum(zt, mt[:, None, None])
-        zb = np.minimum(zb, mz[:, None, None])
     zc, h = 0.5 * (zt + zb), 0.5 * (zt - zb)
     phi_f = _superellipse_phi(Y, Z, b, zc, h, bp.p)
-    x_start = x_ref_a - bp.nose_len
-    phi_f = np.maximum(phi_f, np.maximum(x_start - X, X - x_rear))
+    # The machined body ends at Ref A: the nose cone is a separate printed part
+    # (Part 4 nose.py, team spec 2026-09-27). nose_len only rounds the body's
+    # front face now; nothing is left ahead of Ref A.
+    phi_f = np.maximum(phi_f, np.maximum(x_ref_a - X, X - x_rear))
     # sidepods
     ts = max(bp.s_taper, 1e-3)
     w = np.minimum(np.clip((X - bp.s_x0) / ts, 0, 1), np.clip((bp.s_x1 - X) / ts, 0, 1))
