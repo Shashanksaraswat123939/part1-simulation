@@ -21,7 +21,8 @@ Shape, all in mm, car coordinates (x nose->tail, z up from the track):
   sidepods   a second, wide and low superellipse loft over [s_x0, s_x1] with
              `s_taper` mm ease at each end: what encloses the 52 mm T4.2 cargo.
   floor      an optional flat plate (f_b > 0) of thickness f_t at height f_z,
-             from Ref A to the rear face; the wheel zones cut it where T7.9
+             from Ref A to the rear face, with the fuselage's bottom brought
+             down onto it (a flat underside); the wheel zones cut it where T7.9
              requires.
 """
 from __future__ import annotations
@@ -99,8 +100,12 @@ def _superellipse_phi(y, z, b, zc, h, p):
     return (r ** (1.0 / p) - 1.0) * np.minimum(b, h)
 
 
-def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float):
-    """Signed distance field (mm, negative inside) on grids X, Y, Z (mm)."""
+def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float, must=None):
+    """Signed distance field (mm, negative inside) on grids X, Y, Z (mm).
+
+    `must`: optional per-x (half-width, z_top, z_bottom) the fuselage has to
+    cover (the mandatory solids near the centreline); sections grow to it so
+    no mandatory solid is left as a separate island (T4.1)."""
     L = x_rear - x_ref_a
     xm = x_ref_a + bp.x_max_frac * L
     # fuselage stations
@@ -119,6 +124,15 @@ def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float):
         h_n = 0.5 * (bp.n_zt - bp.n_zb) * k
         zt = np.where(X < x_ref_a, zc_n + h_n, zt)
         zb = np.where(X < x_ref_a, zc_n - h_n, zb)
+    if bp.f_b > 0:
+        # A floor is the car's flat underside: the fuselage comes down to it,
+        # or the plate would float (T4.1) under a high-bottomed body.
+        zb = np.minimum(zb, bp.f_z)
+    if must is not None:
+        mb, mt, mz = must                                 # arrays over X[:, 0, 0]
+        b = np.maximum(b, mb[:, None, None])
+        zt = np.maximum(zt, mt[:, None, None])
+        zb = np.minimum(zb, mz[:, None, None])
     zc, h = 0.5 * (zt + zb), 0.5 * (zt - zb)
     phi_f = _superellipse_phi(Y, Z, b, zc, h, bp.p)
     x_start = x_ref_a - bp.nose_len
@@ -153,7 +167,7 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams):
     zs = (r.origin_m[2] + np.arange(r.shape[2]) * d) * 1e3
     X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
     phi = phi_mm(bp, X, Y, Z, geom.landmarks["ref_plane_A_m"] * 1e3,
-                 geom.landmarks["rear_face_m"] * 1e3) / 1e3
+                 geom.landmarks["rear_face_m"] * 1e3, _must_cover(geom, ys, zs)) / 1e3
     geom.phi.grid = phi.astype(np.float32)
     geom.phi.apply_hard_constraints()
     up.enforce_symmetry(geom)
@@ -162,6 +176,26 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams):
     up.enforce_machinability(geom)
     geom.spacing_m = d
     return geom
+
+
+def _must_cover(geom, ys, zs, y_max_mm: float = 15.0, pad_mm: float = 1.5):
+    """Per-x envelope (b, z_top, z_bot) of the mandatory solids within
+    |y| <= y_max (the cartridge wall and halo deck; the 26 mm cargo is the
+    sidepods' job), padded and smoothed along x so the loft stays smooth."""
+    from scipy.ndimage import maximum_filter1d, minimum_filter1d
+    hs = geom.phi.hard_mask_solid & (np.abs(ys)[None, :, None] <= y_max_mm)
+    nx = hs.shape[0]
+    b = np.zeros(nx)
+    t = np.full(nx, -1e3)
+    z0 = np.full(nx, 1e3)
+    for i in np.nonzero(hs.any(axis=(1, 2)))[0]:
+        jj, kk = np.nonzero(hs[i])
+        b[i] = np.abs(ys[jj]).max() + pad_mm
+        t[i] = zs[kk].max() + pad_mm
+        z0[i] = zs[kk].min() - pad_mm
+    w = 5
+    return (maximum_filter1d(b, 2 * w + 1), maximum_filter1d(t, 2 * w + 1),
+            minimum_filter1d(z0, 2 * w + 1))
 
 
 def sample(rng, n: int) -> list:

@@ -157,6 +157,24 @@ def test_hj_substeps_never_split_the_body():
     finally:
         use_spacing(0.3)
 
+
+def test_param_body_is_one_legal_piece_with_and_without_floor():
+    """The parametric body must come out one watertight piece that holds the
+    mandatory solids, with a floor (flat underside) or without."""
+    from coarse import use_spacing
+    use_spacing(2.0)
+    try:
+        import param_body as pb
+        import unified_phi as up
+        from scipy.ndimage import label
+        for bp in (pb.BodyParams(), pb.BodyParams(f_b=27.8, m_zb=11.3, s_zb=13.3)):
+            g = pb.build(120.3, 46.0, 43.72, bp)
+            assert label(g.phi.grid < 0)[1] == 1
+            assert (g.phi.grid[g.phi.hard_mask_solid] < 0).all()
+            assert up.extract_half_surface(g).is_watertight
+    finally:
+        use_spacing(0.3)
+
 if __name__ == "__main__":
     _mod = sys.modules[__name__]
     _fails = 0
