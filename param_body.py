@@ -58,6 +58,18 @@ class BodyParams:
     f_b: float = 0.0
     f_z: float = 3.5
     f_t: float = 2.0
+    # --- hybrid (2026-09-27) ---------------------------------------------
+    # 8-station loft: half-width, top and bottom of the fuselage at STATIONS_U
+    # (fractions from Ref A to the rear face), monotone-cubic between them.
+    # Empty = the 3-station loft above.
+    st_b: tuple = ()
+    st_zt: tuple = ()
+    st_zb: tuple = ()
+    # smooth blend radius where fuselage, sidepods and floor meet (mm)
+    blend_mm: float = 0.0
+    # sculpt modes: strengths (mm, + grows) of smooth bumps at MODE_U x
+    # MODE_ANG_DEG around the section, mirrored left/right. Empty = none.
+    modes: tuple = ()
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -68,7 +80,43 @@ class BodyParams:
         unknown = set(d) - names
         if unknown:
             raise ValueError(f"unknown body parameters {sorted(unknown)}")
+        d = {k: (tuple(v) if isinstance(v, list) else v) for k, v in d.items()}
         return cls(**d)
+
+    def to_hybrid(self, n_modes=None) -> "BodyParams":
+        """The same body as an 8-station loft with zero modes: the hybrid
+        optimiser's starting point."""
+        from dataclasses import replace
+        u = np.array(STATIONS_U)
+        b = _legacy_profile(self.n_b, self.m_b, self.r_b, self.x_max_frac, u)
+        zt = _legacy_profile(self.n_zt, self.m_zt, self.r_zt, self.x_max_frac, u)
+        zb = _legacy_profile(self.n_zb, self.m_zb, self.r_zb, self.x_max_frac, u)
+        k = N_MODES if n_modes is None else n_modes
+        return replace(self, st_b=tuple(map(float, b)), st_zt=tuple(map(float, zt)),
+                       st_zb=tuple(map(float, zb)), modes=(0.0,) * k,
+                       blend_mm=self.blend_mm or 3.0)
+
+
+STATIONS_U = (0.0, 0.08, 0.2, 0.35, 0.5, 0.65, 0.82, 1.0)
+MODE_U = (0.06, 0.18, 0.3, 0.42, 0.54, 0.66, 0.78, 0.9)
+MODE_ANG_DEG = (15.0, 60.0, 120.0, 165.0)      # from the top, down the side
+N_MODES = len(MODE_U) * len(MODE_ANG_DEG)      # 32
+MODE_SIGMA_MM = 7.0
+
+
+def _legacy_profile(v0, v1, v2, x_max_frac, u):
+    u = np.asarray(u, float)
+    a = np.clip(u / max(x_max_frac, 1e-6), 0, 1)
+    c = np.clip((u - x_max_frac) / max(1 - x_max_frac, 1e-6), 0, 1)
+    return np.where(u <= x_max_frac, v0 + (v1 - v0) * (1 - (1 - a) ** 2), v1 + (v2 - v1) * c * c)
+
+
+def _smin(a, b, k):
+    """Polynomial smooth minimum (k = blend radius, mm); k = 0 is min()."""
+    if k <= 0:
+        return np.minimum(a, b)
+    h = np.clip(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    return b * (1 - h) + a * h - k * h * (1 - h)
 
 
 # Search bounds (mm). Chosen from the legal envelope (build_unified_geometry:
@@ -106,15 +154,7 @@ def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float, must=None):
     `must`: optional per-x (half-width, z_top, z_bottom) the fuselage has to
     cover (the mandatory solids near the centreline); sections grow to it so
     no mandatory solid is left as a separate island (T4.1)."""
-    L = x_rear - x_ref_a
-    xm = x_ref_a + bp.x_max_frac * L
-    # fuselage stations
-    u1 = (X - x_ref_a) / max(xm - x_ref_a, 1e-6)
-    u2 = (X - xm) / max(x_rear - xm, 1e-6)
-    front = X <= xm
-    b = np.where(front, _ease(bp.n_b, bp.m_b, u1, False), _ease(bp.m_b, bp.r_b, u2, True))
-    zt = np.where(front, _ease(bp.n_zt, bp.m_zt, u1, False), _ease(bp.m_zt, bp.r_zt, u2, True))
-    zb = np.where(front, _ease(bp.n_zb, bp.m_zb, u1, False), _ease(bp.m_zb, bp.r_zb, u2, True))
+    b, zt, zb = _fuselage(bp, X, x_ref_a, x_rear)
     zc, h = 0.5 * (zt + zb), 0.5 * (zt - zb)
     phi_f = _superellipse_phi(Y, Z, b, zc, h, bp.p)
     # The machined body ends at Ref A: the nose cone is a separate printed part
@@ -129,17 +169,65 @@ def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float, must=None):
     sh = 0.5 * (bp.s_zt - bp.s_zb) * np.maximum(w, 0.35)
     phi_s = _superellipse_phi(Y, Z, sb, 0.5 * (bp.s_zt + bp.s_zb), sh, bp.s_p)
     phi_s = np.where(w > 0, phi_s, 1e3)
-    phi = np.minimum(phi_f, phi_s)
+    phi = _smin(phi_f, phi_s, bp.blend_mm)
     # floor plate
     if bp.f_b > 0:
         pf = np.maximum.reduce([np.abs(Y) - bp.f_b, bp.f_z - Z, Z - (bp.f_z + bp.f_t),
                                 x_ref_a - X, X - x_rear])
-        phi = np.minimum(phi, pf)
+        phi = _smin(phi, pf, bp.blend_mm)
+    if bp.modes and any(bp.modes):
+        phi = phi - mode_field(bp, X, Y, Z, x_ref_a, x_rear)
     return phi
 
 
+def _fuselage(bp, X, x_ref_a, x_rear):
+    """(half-width, top, bottom) of the fuselage along X (arrays like X)."""
+    if bp.st_b:
+        from scipy.interpolate import PchipInterpolator
+        u = np.clip((X - x_ref_a) / (x_rear - x_ref_a), 0.0, 1.0)
+        b, zt, zb = (PchipInterpolator(STATIONS_U, v)(u) for v in (bp.st_b, bp.st_zt, bp.st_zb))
+        return b, zt, np.minimum(zb, zt - 4.0)       # always a section, whatever the numbers
+    xm = x_ref_a + bp.x_max_frac * (x_rear - x_ref_a)
+    u1 = (X - x_ref_a) / max(xm - x_ref_a, 1e-6)
+    u2 = (X - xm) / max(x_rear - xm, 1e-6)
+    front = X <= xm
+    b = np.where(front, _ease(bp.n_b, bp.m_b, u1, False), _ease(bp.m_b, bp.r_b, u2, True))
+    zt = np.where(front, _ease(bp.n_zt, bp.m_zt, u1, False), _ease(bp.m_zt, bp.r_zt, u2, True))
+    zb = np.where(front, _ease(bp.n_zb, bp.m_zb, u1, False), _ease(bp.m_zb, bp.r_zb, u2, True))
+    return b, zt, zb
+
+
+def mode_centres(bp, x_ref_a: float, x_rear: float) -> np.ndarray:
+    """(N_MODES, 3) mode centres, mm, on the right half of the fuselage."""
+    xs = np.array([x_ref_a + u * (x_rear - x_ref_a) for u in MODE_U])
+    b, zt, zb = (np.asarray(a, float).ravel() for a in _fuselage(bp, xs, x_ref_a, x_rear))
+    zc, h = 0.5 * (zt + zb), 0.5 * (zt - zb)
+    out = []
+    for i, x in enumerate(xs):
+        for ang in MODE_ANG_DEG:
+            t = np.radians(ang)
+            y = b[i] * abs(np.sin(t)) ** (2 / bp.p)
+            z = zc[i] + h[i] * np.sign(np.cos(t)) * abs(np.cos(t)) ** (2 / bp.p)
+            out.append((x, y, z))
+    return np.array(out)
+
+
+def mode_field(bp, X, Y, Z, x_ref_a, x_rear):
+    """sum_k a_k exp(-|P - c_k|^2 / 2 sigma^2) with |y| (mirrored). It is
+    subtracted from phi, so a positive a_k grows the body ~a_k mm at c_k."""
+    C = mode_centres(bp, x_ref_a, x_rear)
+    Ya = np.abs(Y)
+    out = np.zeros(np.shape(X), dtype=float)
+    s2 = 2 * MODE_SIGMA_MM ** 2
+    for a, (cx, cy, cz) in zip(bp.modes, C):
+        if a:
+            out += a * np.exp(-((X - cx) ** 2 + (Ya - cy) ** 2 + (Z - cz) ** 2) / s2)
+    return out
+
+
 def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
-          target_body_kg: float | None = None, machinable: bool = True):
+          target_body_kg: float | None = None, machinable: bool = True,
+          skin_offset_mm: float | None = None):
     """UnifiedGeometry whose body is `bp`, with every rule mask applied.
 
     machinable: the team's 3-axis, 6.25 mm ball-end, top-and-bottom process
@@ -179,6 +267,8 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
     def mass(g):
         return sum(c.mass_kg for c in up.compute_mass_com(g))
 
+    if skin_offset_mm is not None:           # fixed skin: gradient checks, no mass sizing
+        return make(skin_offset_mm)
     if target_body_kg is None:
         return make(0.0)
     # Secant on the skin offset; mass is monotone in it. 0.05 g is well inside
