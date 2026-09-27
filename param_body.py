@@ -154,28 +154,69 @@ def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float, must=None):
     return phi
 
 
-def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams):
-    """UnifiedGeometry whose body is `bp`, with every rule mask applied."""
+def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
+          target_body_kg: float | None = None, machinable: bool = True):
+    """UnifiedGeometry whose body is `bp`, with every rule mask applied.
+
+    machinable: the team's 3-axis, 6.25 mm ball-end, top-and-bottom process
+      (machining.make_machinable) is applied to the drawn shape.
+    target_body_kg: no ballast, so the body itself carries the mass the T3.6
+      floor needs. The drawn shape is offset by a uniform skin (grown or
+      thinned, the design intent kept) until the machined body weighs this.
+    """
     import unified_phi as up
     from phi_updater import reinitialise_sdf
-    geom = up.build_unified_geometry(W_mm, x_front_mm, d_halo_mm, init_mode="full")
+    import machining
+    base = up.build_unified_geometry(W_mm, x_front_mm, d_halo_mm, init_mode="full")
     # Read at call time: sandbox/coarse.use_spacing rewrites the module globals,
     # and an import-time copy drew the body at 0.3 mm on a 1 mm grid.
-    r, d = geom.region, up.GRID_SPACING_M
+    r, d = base.region, up.GRID_SPACING_M
     xs = (r.origin_m[0] + np.arange(r.shape[0]) * d) * 1e3
     ys = (r.origin_m[1] + np.arange(r.shape[1]) * d) * 1e3
     zs = (r.origin_m[2] + np.arange(r.shape[2]) * d) * 1e3
     X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
-    phi = phi_mm(bp, X, Y, Z, geom.landmarks["ref_plane_A_m"] * 1e3,
-                 geom.landmarks["rear_face_m"] * 1e3, _must_cover(geom, ys, zs)) / 1e3
-    geom.phi.grid = phi.astype(np.float32)
-    geom.phi.apply_hard_constraints()
-    up.enforce_symmetry(geom)
-    reinitialise_sdf(geom.phi)
-    geom.phi.apply_hard_constraints()
-    up.enforce_machinability(geom)
-    geom.spacing_m = d
-    return geom
+    phi0 = phi_mm(bp, X, Y, Z, base.landmarks["ref_plane_A_m"] * 1e3,
+                  base.landmarks["rear_face_m"] * 1e3, _must_cover(base, ys, zs))
+
+    def make(offset_mm):
+        import copy
+        g = copy.deepcopy(base)
+        g.phi.grid = ((phi0 - offset_mm) / 1e3).astype(np.float32)
+        g.phi.apply_hard_constraints()
+        up.enforce_symmetry(g)
+        reinitialise_sdf(g.phi)
+        g.phi.apply_hard_constraints()
+        rep = machining.make_machinable(g) if machinable else {}
+        up.enforce_symmetry(g)
+        g.spacing_m = d
+        g.build_report = dict(rep, skin_offset_mm=offset_mm)
+        return g
+
+    def mass(g):
+        return sum(c.mass_kg for c in up.compute_mass_com(g))
+
+    if target_body_kg is None:
+        return make(0.0)
+    # Secant on the skin offset; mass is monotone in it. 0.05 g is well inside
+    # the voxel-count noise of the mass itself (~0.3 g at 1 mm).
+    a, b = -2.0, 4.0
+    ga, gb = make(a), make(b)
+    fa, fb = mass(ga) - target_body_kg, mass(gb) - target_body_kg
+    best = min(((abs(fa), ga), (abs(fb), gb)), key=lambda t: t[0])
+    for _ in range(6):
+        if abs(fb - fa) < 1e-9:
+            break
+        c = float(np.clip(b - fb * (b - a) / (fb - fa), -8.0, 15.0))
+        gc = make(c)
+        fc = mass(gc) - target_body_kg
+        if abs(fc) < best[0]:
+            best = (abs(fc), gc)
+        if abs(fc) < 5e-5:
+            break
+        a, fa, b, fb = b, fb, c, fc
+    g = best[1]
+    g.build_report["mass_error_g"] = (mass(g) - target_body_kg) * 1e3
+    return g
 
 
 def _must_cover(geom, ys, zs, y_max_mm: float = 15.0, pad_mm: float = 1.5):
