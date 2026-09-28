@@ -260,6 +260,7 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
         g.phi.apply_hard_constraints()
         rep = machining.make_machinable(g) if machinable else {}
         up.enforce_symmetry(g)
+        rep["islands_removed_mm3"] = _drop_islands(g) * (d * 1e3) ** 3
         g.spacing_m = d
         g.build_report = dict(rep, skin_offset_mm=offset_mm)
         return g
@@ -276,6 +277,8 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
     a, b = -2.0, 4.0
     ga, gb = make(a), make(b)
     fa, fb = mass(ga) - target_body_kg, mass(gb) - target_body_kg
+    a0, fa0, ga0, b0, fb0, gb0 = a, fa, ga, b, fb, gb
+    tried = []
     best = min(((abs(fa), ga), (abs(fb), gb)), key=lambda t: t[0])
     for _ in range(6):
         if abs(fb - fa) < 1e-9:
@@ -288,9 +291,49 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
         if abs(fc) < 5e-5:
             break
         a, fa, b, fb = b, fb, c, fc
+        tried.append((c, fc, gc))
+    # Bisection fallback: a skin that grows the body into a rule zone changes
+    # the mass in steps, and the secant can stall there (0.21 g short with the
+    # v2 CAD supports, 2026-09-28). Bisect between the closest evaluated skins
+    # either side of the target.
+    tried += [(a0, fa0, ga0), (b0, fb0, gb0)]
+    for _ in range(8):
+        if best[0] < 5e-5:
+            break
+        lo = max((t for t in tried if t[1] < 0), key=lambda t: t[1], default=None)
+        hi = min((t for t in tried if t[1] > 0), key=lambda t: t[1], default=None)
+        if lo is None or hi is None:
+            break
+        c = 0.5 * (lo[0] + hi[0])
+        gc = make(c)
+        fc = mass(gc) - target_body_kg
+        tried.append((c, fc, gc))
+        if abs(fc) < best[0]:
+            best = (abs(fc), gc)
     g = best[1]
     g.build_report["mass_error_g"] = (mass(g) - target_body_kg) * 1e3
     return g
+
+
+def _drop_islands(geom) -> int:
+    """Remove solid pieces cut off from the main body that hold no mandatory
+    solid (a swollen skin can poke through a rule zone and leave a sliver
+    behind it, T4.1). Returns the number of cells removed."""
+    from scipy.ndimage import label
+    S = geom.phi.grid < 0
+    lab, n = label(S)
+    if n <= 1:
+        return 0
+    sizes = np.bincount(lab.ravel())
+    sizes[0] = 0
+    main = sizes.argmax()
+    keep = np.zeros(n + 1, bool)
+    keep[main] = True
+    keep[np.unique(lab[geom.phi.hard_mask_solid & S])] = True
+    keep[0] = True
+    drop = ~keep[lab]
+    geom.phi.grid[drop] = abs(geom.phi.grid[drop]) + 1e-4
+    return int(drop.sum())
 
 
 def _must_cover(geom, ys, zs, y_max_mm: float = 15.0, pad_mm: float = 1.5):
