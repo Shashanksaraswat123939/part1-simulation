@@ -148,12 +148,14 @@ def _superellipse_phi(y, z, b, zc, h, p):
     return (r ** (1.0 / p) - 1.0) * np.minimum(b, h)
 
 
-def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float, must=None):
+def phi_mm(bp: BodyParams, X, Y, Z, x_ref_a: float, x_rear: float):
     """Signed distance field (mm, negative inside) on grids X, Y, Z (mm).
 
-    `must`: optional per-x (half-width, z_top, z_bottom) the fuselage has to
-    cover (the mandatory solids near the centreline); sections grow to it so
-    no mandatory solid is left as a separate island (T4.1)."""
+    The mandatory solids (T5.5 cartridge wall, halo deck) are NOT drawn here:
+    build() adds them through the hard masks and the machining closing rounds
+    them into the loft (on the start car the wall housing rises from the loft
+    top 41.7 mm at x 150 to 47.8 mm at x 174, measured 2026-09-30). A loft
+    that leaves one as a separate island fails T4.1 in the audit."""
     b, zt, zb = _fuselage(bp, X, x_ref_a, x_rear)
     zc, h = 0.5 * (zt + zb), 0.5 * (zt - zb)
     phi_f = _superellipse_phi(Y, Z, b, zc, h, bp.p)
@@ -248,7 +250,7 @@ def build(W_mm: float, x_front_mm: float, d_halo_mm: float, bp: BodyParams,
     zs = (r.origin_m[2] + np.arange(r.shape[2]) * d) * 1e3
     X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
     phi0 = phi_mm(bp, X, Y, Z, base.landmarks["ref_plane_A_m"] * 1e3,
-                  base.landmarks["rear_face_m"] * 1e3, _must_cover(base, ys, zs))
+                  base.landmarks["rear_face_m"] * 1e3)
 
     def make(offset_mm):
         import copy
@@ -334,26 +336,6 @@ def _drop_islands(geom) -> int:
     drop = ~keep[lab]
     geom.phi.grid[drop] = abs(geom.phi.grid[drop]) + 1e-4
     return int(drop.sum())
-
-
-def _must_cover(geom, ys, zs, y_max_mm: float = 15.0, pad_mm: float = 1.5):
-    """Per-x envelope (b, z_top, z_bot) of the mandatory solids within
-    |y| <= y_max (the cartridge wall and halo deck; the 26 mm cargo is the
-    sidepods' job), padded and smoothed along x so the loft stays smooth."""
-    from scipy.ndimage import maximum_filter1d, minimum_filter1d
-    hs = geom.phi.hard_mask_solid & (np.abs(ys)[None, :, None] <= y_max_mm)
-    nx = hs.shape[0]
-    b = np.zeros(nx)
-    t = np.full(nx, -1e3)
-    z0 = np.full(nx, 1e3)
-    for i in np.nonzero(hs.any(axis=(1, 2)))[0]:
-        jj, kk = np.nonzero(hs[i])
-        b[i] = np.abs(ys[jj]).max() + pad_mm
-        t[i] = zs[kk].max() + pad_mm
-        z0[i] = zs[kk].min() - pad_mm
-    w = 5
-    return (maximum_filter1d(b, 2 * w + 1), maximum_filter1d(t, 2 * w + 1),
-            minimum_filter1d(z0, 2 * w + 1))
 
 
 def sample(rng, n: int) -> list:
