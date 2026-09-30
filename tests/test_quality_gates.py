@@ -125,11 +125,3 @@ def test_run_quality_gates_all_components_present():
         assert set(result.phi_snapshot_paths.keys()) == expected, \
             f"Expected {expected}, got {set(result.phi_snapshot_paths.keys())}"
         _pass("test_run_quality_gates_all_components_present")
-
-if __name__ == "__main__":
-    test_gate_result_validates_lifecycle_state()
-    test_gate_result_rejects_empty_phi_paths()
-    test_run_quality_gates_success()
-    test_run_quality_gates_phi_snapshots_always_saved()
-    test_run_quality_gates_all_components_present()
-    print("\nAll quality_gates tests passed.")

@@ -394,19 +394,3 @@ def test_open_pockets_are_left_alone():
         f"an open trench at ({i},{j}) lost {before - after} air cells -- the "
         f"projection is filling void the tool can reach")
     _pass("test_open_pockets_are_left_alone")
-
-
-if __name__ == "__main__":
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for name in sorted(fns):
-        try:
-            globals()[name]()
-            passed += 1
-        except SystemExit:
-            raise
-        except Exception as e:  # noqa: BLE001
-            print(f"FAIL {name}: {e!r}")
-            failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)

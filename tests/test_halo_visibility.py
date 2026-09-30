@@ -268,11 +268,3 @@ def test_the_loft_ceiling_and_deck_agree():
         f"{overlap:,} cells are both forced air (above the loft) and forced "
         f"solid (the deck). hard_solid &= ~hard_air would silently delete "
         f"them and the deck would come out full of holes.")
-
-
-if __name__ == "__main__":
-    _mod = sys.modules[__name__]
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        _run(getattr(_mod, _n))
-    print("%d passed, %d failed" % (_passed, _failed))
-    sys.exit(1 if _failed else 0)

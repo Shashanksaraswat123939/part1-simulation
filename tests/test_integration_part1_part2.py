@@ -74,11 +74,3 @@ def test_mass_com_can_be_ingested():
     assert full.total_mass_kg > 0
     assert full.com_z_m > 0 and full.com_z_m < 0.1, f"COM z={full.com_z_m} unreasonable"
     _pass("test_mass_com_can_be_ingested")
-
-if __name__ == "__main__":
-    test_co2_mass_constant_matches()
-    test_component_mass_com_shape_matches()
-    test_fixed_hardware_spec_accepts_part1_values()
-    test_lifecycle_states_match()
-    test_mass_com_can_be_ingested()
-    print("\nAll integration tests passed.")

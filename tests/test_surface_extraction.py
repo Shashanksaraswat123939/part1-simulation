@@ -212,22 +212,3 @@ def test_accessibility_gate_answers_known_shapes_correctly():
     centres = hollow.triangles_center[blocked_h]
     assert (np.abs(centres[:, 0]) < 0.021).all(), (
         "blocked faces are not the cavity walls")
-
-
-if __name__ == "__main__":
-    # Collected by name. The hand-written call list this replaces printed
-    # "All surface_extraction tests passed" while silently skipping every test
-    # appended below it -- the same bug found in five other files today.
-    import sys as _sys
-    _mod = _sys.modules[__name__]
-    _fail = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)()
-            print("PASS " + _n)
-        except Exception as _e:  # noqa: BLE001
-            print("FAIL %s: %s" % (_n, _e))
-            _fail += 1
-    print("All surface_extraction tests passed." if not _fail
-          else "%d failed" % _fail)
-    _sys.exit(1 if _fail else 0)

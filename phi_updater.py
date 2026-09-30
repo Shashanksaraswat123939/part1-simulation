@@ -618,7 +618,7 @@ def apply_adjoint_sensitivity_symmetric(
         hj_update(phi, combined, cfl_limited_dt(combined, dt))
 
 
-# K-2: SPEC.txt §22 names the φ-update entry point `update_phi`. Part 1 uses
+# K-2: SPEC_ASCII.md §22 names the φ-update entry point `update_phi`. Part 1 uses
 # `apply_adjoint_sensitivity_symmetric`. Expose both names so Part 3's
 # `from phi_updater import update_phi` succeeds without renaming the function.
 update_phi = apply_adjoint_sensitivity_symmetric

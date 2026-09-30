@@ -89,13 +89,3 @@ def test_nose_density_higher_than_body():
     body = compute_component_mass_com(phi_body, DENSITY_BODY_KGM3)
     assert nose.mass_kg > body.mass_kg, "Nose (1000 kg/m^3) should be heavier than body (163 kg/m^3)"
     _pass("test_nose_density_higher_than_body")
-
-if __name__ == "__main__":
-    test_compute_component_mass_positive()
-    test_compute_component_mass_com_in_bounds()
-    test_zero_solid_cells_returns_zero_mass()
-    test_sidepod_pair_mass_is_double()
-    test_sidepod_pair_com_x_matches_right()
-    test_compute_all_returns_four_components()
-    test_nose_density_higher_than_body()
-    print("\nAll mass_com_calculator tests passed.")

@@ -503,28 +503,3 @@ def test_E1_no_hardcoded_absolute_path():
     assert "PART2_PATH" in content or "__file__" in content, \
         "fixed_hardware.py must use PART2_PATH env var or __file__ for Part 2 path"
     _pass("test_E1_no_hardcoded_absolute_path")
-
-
-if __name__ == "__main__":
-    test_B1_reinit_no_nan_30_cubed()
-    test_B1_reinit_gradient_near_one()
-    test_B1_reinit_hard_constraints_hold()
-    test_B1_hj_update_float64_computation()
-    test_B2_geometry_contract_import_silent()
-    test_B3_mesh_quality_checks_triangle_angles()
-    test_D1_small_grid_extraction_succeeds()
-    test_D1_attachment_face_open_boundary_accepted()
-    test_D2_radius_estimator_returns_array()
-    test_D3_accessibility_uses_find_inaccessible_faces()
-    test_D4_velocity_extension_propagates_from_source()
-    test_D4_velocity_extension_no_division_errors()
-    test_D6_adjoint_sensitivity_updates_phi()
-    test_D6_adjoint_none_mesh_raises_not_silently_skips()
-    test_D7_requirements_txt_exists()
-    test_D8_stl_assembler_raises_on_non_watertight_half()
-    test_wall_thickness_rejects_thin_slab_accepts_thick_slab()
-    test_wall_thickness_skipped_for_milled_components()
-    test_wall_thickness_repair_loop_fixes_localized_thin_spot()
-    test_D9_component_mass_com_import_source()
-    test_E1_no_hardcoded_absolute_path()
-    print("\nAll audit-fix tests passed.")

@@ -49,5 +49,5 @@ def pytest_collection_finish(session):
 
 def _reset():
     if geometry_contract.GRID_SPACING_MM != _PRISTINE_MM:
-        from sandbox import coarse
+        import coarse
         coarse.use_spacing(_PRISTINE_MM)

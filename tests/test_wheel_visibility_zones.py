@@ -163,17 +163,3 @@ def test_default_gap_constants_match_regs():
     assert FRONT_INNER_GAP_MIN_MM == 38.0   # T7.2.1
     assert REAR_INNER_GAP_MIN_MM == 30.0    # T7.2.2
     _pass("test_default_gap_constants_match_regs")
-
-
-if __name__ == "__main__":
-    test_rect_mask_marks_correct_x_band()
-    test_rect_mask_respects_y_min()
-    test_wedge_mask_right_angle_corner_is_forbidden()
-    test_wedge_mask_far_tip_is_clear()
-    test_wedge_direction_fwd_mirrors_aft()
-    test_build_t79_sidepod_combines_both_wedges()
-    test_build_t79_nose_returns_none()
-    test_build_t79_main_body_forbidden_near_front_wheel()
-    test_build_t79_rearpod_forbidden_near_rear_wheel()
-    test_default_gap_constants_match_regs()
-    print("\nAll wheel_visibility_zones tests passed.")

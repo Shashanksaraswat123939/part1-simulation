@@ -82,10 +82,3 @@ def test_missing_sidepod_raises():
         _fail("test_missing_sidepod_raises", "should have raised")
     except ValueError:
         _pass("test_missing_sidepod_raises")
-
-if __name__ == "__main__":
-    test_mirror_flips_y()
-    test_assemble_stl_returns_two_paths()
-    test_assemble_half_has_y_geq_zero()
-    test_missing_sidepod_raises()
-    print("\nAll stl_assembler tests passed.")

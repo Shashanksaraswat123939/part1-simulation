@@ -207,17 +207,3 @@ def test_regs_dimensions_unchanged():
     assert CARGO_NARROW_WIDTH_MM == 10.0
     assert CARGO_HEIGHT_MM == 10.0
     _pass("test_regs_dimensions_unchanged")
-
-
-if __name__ == "__main__":
-    test_placement_never_shares_volume_with_the_halo_pocket()
-    test_cargo_sits_directly_under_the_halo()
-    test_placement_within_axle_corridor()
-    test_placement_defaults_to_corridor_centre_when_no_conflict()
-    test_placement_no_longer_shifts_for_a_centred_halo()
-    test_placement_still_raises_when_the_corridor_itself_is_too_short()
-    test_solid_mask_wide_end_is_wider_than_narrow_end()
-    test_solid_mask_respects_height()
-    test_is_valid_filters_placements_the_builder_would_reject()
-    test_regs_dimensions_unchanged()
-    print("\nAll virtual_cargo tests passed.")

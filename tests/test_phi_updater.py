@@ -556,21 +556,3 @@ def test_stage2_update_leaves_no_void_the_cutter_cannot_reach():
             "above proves nothing -- this carve no longer seals cavities")
     finally:
         UP.enforce_machinability = original
-
-
-if __name__ == "__main__":
-    # Collected by name. The hand-written call list below this line silently
-    # dropped every test appended after it -- the bug that has already hidden
-    # five tests in this repo, including the one guarding the no-op update.
-    import sys as _sys
-    _mod = _sys.modules[__name__]
-    _fail = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)()
-            print(f"PASS {_n}")
-        except Exception as _e:  # noqa: BLE001
-            print(f"FAIL {_n}: {_e!r}")
-            _fail += 1
-    print("All phi_updater tests passed." if not _fail else f"{_fail} failed")
-    _sys.exit(1 if _fail else 0)

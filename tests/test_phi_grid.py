@@ -127,17 +127,3 @@ def test_post_init_shape_mismatch_raises():
         _fail("test_post_init_shape_mismatch_raises", "should have raised")
     except ValueError:
         _pass("test_post_init_shape_mismatch_raises")
-
-if __name__ == "__main__":
-    test_init_sphere_produces_negative_inside()
-    test_init_sphere_produces_positive_outside()
-    test_init_slab()
-    test_init_random_has_noise()
-    test_hard_constraints_enforced_after_init()
-    test_build_hard_masks_basic()
-    test_build_hard_masks_overlap_resolved()
-    test_save_and_load_roundtrip()
-    test_load_wrong_shape_raises()
-    test_grid_dtype_is_float32()
-    test_post_init_shape_mismatch_raises()
-    print("\nAll phi_grid tests passed.")

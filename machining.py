@@ -31,22 +31,6 @@ def _dilate(mask, r):
     return distance_transform_edt(~mask) <= r
 
 
-def _open(mask, r):
-    from scipy.ndimage import distance_transform_edt
-    core = distance_transform_edt(mask) > r
-    return _dilate(core, r) & mask if core.any() else np.zeros_like(mask)
-
-
-def _column_fill(S):
-    """Fill each (x, y) column between its lowest and highest solid cell."""
-    any_ = S.any(axis=2)
-    nz = S.shape[2]
-    k = np.arange(nz)
-    lo = np.where(any_, np.argmax(S, axis=2), nz)
-    hi = np.where(any_, nz - 1 - np.argmax(S[:, :, ::-1], axis=2), -1)
-    return (k[None, None, :] >= lo[..., None]) & (k[None, None, :] <= hi[..., None])
-
-
 def _visible(M, axis: int, from_high: bool):
     """Cells of M from which a straight line along `axis` (toward the high or
     low end of the grid) stays inside M to the grid boundary."""
@@ -133,9 +117,3 @@ def make_machinable(geom, tool_r_mm: float = TOOL_R_MM, max_iter: int = 4) -> di
     reinitialise_sdf(phi)
     phi.apply_hard_constraints()
     return report
-
-
-def unreachable_air_cells(S, r_cells: float) -> int:
-    """Air cells the ball cannot clear from any allowed direction."""
-    A = ~S
-    return int((A & ~reachable_air(A, r_cells)).sum())

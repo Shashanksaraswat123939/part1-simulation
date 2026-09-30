@@ -111,15 +111,3 @@ def test_d_halo_changes_bounding_volumes_end_to_end():
         "Different d_halo values must produce different main_body geometry"
     )
     _pass("test_d_halo_changes_bounding_volumes_end_to_end")
-
-
-if __name__ == "__main__":
-    test_pocket_floor_is_fixed_at_24mm()
-    test_pocket_depth_matches_ball_nose_cut()
-    test_pocket_x_position_shifts_with_d_halo()
-    test_pocket_length_matches_regs_appendix()
-    test_pocket_width_symmetric_about_centerline()
-    test_forbidden_mask_marks_pocket_cells()
-    test_forbidden_mask_clear_outside_pocket_z()
-    test_d_halo_changes_bounding_volumes_end_to_end()
-    print("\nAll halo_pocket tests passed.")

@@ -36,7 +36,6 @@ the mass push rather than replacing it with a shrink.
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 from geometry_contract import mm_to_m
 

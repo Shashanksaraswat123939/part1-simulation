@@ -425,11 +425,10 @@ def build_unified_geometry(
 
     with_cargo=False drops the mandatory T4.2 solid region. The resulting
     geometry is NOT competition-legal; it exists to unblock exploration, same
-    contract as sandbox/coarse.disable_virtual_cargo.
+    contract as the retired sandbox helper that disabled the cargo.
     """
     from fixed_hardware import (
         ForbiddenCylinder,
-        _build_cylinder_void_mask,
         compute_default_fixed_hardware_inputs,
         place_fixed_hardware,
     )
@@ -924,17 +923,6 @@ def extract_half_surface(geom: UnifiedGeometry):
     mesh.vertices[mesh.vertices[:, 1] < 0.0, 1] = 0.0
     mesh.merge_vertices()
     return mesh
-
-
-def slice_right_half(mesh):
-    """Deprecated: use extract_half_surface(geom). Kept for callers that only
-    have a mesh -- slices at y=0, but does NOT guarantee watertightness."""
-    import trimesh
-    half = trimesh.intersections.slice_mesh_plane(
-        mesh, plane_normal=[0.0, 1.0, 0.0], plane_origin=[0.0, 0.0, 0.0], cap=True
-    )
-    half.merge_vertices()
-    return half
 
 
 def nearest_labels(geom: UnifiedGeometry) -> np.ndarray:

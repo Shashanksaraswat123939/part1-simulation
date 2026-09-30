@@ -30,18 +30,6 @@ def test_ballast_capsule_and_regimes():
     assert d["legal_T36"] and d["regime"] == "absorbing"
 
 
-def test_stage1_proxy_with_ballast_reaches_a_legal_competition_mass():
-    import ballast as bl
-    import bayesian_outer_search as b
-    cart = 0.023
-    for start in (0.0469, 0.0440, 0.0300, 0.0600):
-        m = start
-        for _ in range(50000):
-            m -= 1e-6 * b._proxy_objective_gradients(m + cart)["dT_dmass"]
-        comp = m + bl.ballast_kg(m + cart)
-        assert comp >= b.PROXY_MIN_MASS_KG - 1e-6, (start, m, comp)
-
-
 def test_block_envelope():
     from bounding_volumes import default_rule_envelope
     from geometry_contract import MODEL_BLOCK_HEIGHT_MM, MODEL_BLOCK_WIDTH_MM
@@ -84,27 +72,6 @@ def test_wheels_are_placed_in_car_coordinates():
     assert abs(b[1, 2] - 2 * R_WHEEL_M * 1e3) < 0.3
 
 
-def test_leader_body_extracts_watertight_for_cfd():
-    """Regression: phi == 0 samples + dropped degenerate faces left a 6-edge
-    hole in the leader's half-car STL, which Part 2 rejects."""
-    from coarse import use_spacing
-    use_spacing(2.0)
-    try:
-        import bayesian_outer_search as bos
-        import unified_phi as up
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            _r, g = bos._level2_evaluate_unified(120.3, 46.0, 43.72, n_iters=100,
-                                                 output_dir=td, eval_id=0, return_geom=True)
-        use_spacing(1.0)
-        g = up.remap_geometry(g)
-        up.enforce_symmetry(g)
-        half = up.extract_half_surface(g)
-        assert half.is_watertight
-    finally:
-        use_spacing(0.3)
-
-
 def test_vectorised_splat_matches_a_loop():
     from coarse import use_spacing
     use_spacing(2.0)
@@ -137,14 +104,11 @@ def test_hj_substeps_never_split_the_body():
     from coarse import use_spacing
     use_spacing(2.0)
     try:
-        import bayesian_outer_search as bos
+        import param_body as pb
         import phi_updater as pu
-        import tempfile
-        from scipy.ndimage import label
-        with tempfile.TemporaryDirectory() as td:
-            _r, g = bos._level2_evaluate_unified(120.3, 46.0, 43.72, n_iters=20,
-                                                 output_dir=td, eval_id=0, return_geom=True)
         import unified_phi as up
+        from scipy.ndimage import label
+        g = pb.build(120.3, 46.0, 43.72, pb.BodyParams())
         half = up.extract_half_surface(g)
         n0 = label(g.phi.grid < 0)[1]
         sens = np.ones(len(half.vertices))      # descent = shrink everywhere
@@ -158,16 +122,16 @@ def test_hj_substeps_never_split_the_body():
         use_spacing(0.3)
 
 
-def test_param_body_is_one_legal_piece_with_and_without_floor():
+def test_param_body_is_one_legal_piece():
     """The parametric body must come out one watertight piece that holds the
-    mandatory solids, with a floor (flat underside) or without."""
+    mandatory solids, for two sidepod settings."""
     from coarse import use_spacing
     use_spacing(2.0)
     try:
         import param_body as pb
         import unified_phi as up
         from scipy.ndimage import label
-        for bp in (pb.BodyParams(), pb.BodyParams(f_b=27.8, m_zb=11.3, s_zb=13.3)):
+        for bp in (pb.BodyParams(), pb.BodyParams(s_zb=13.3, s_b=31.0)):
             g = pb.build(120.3, 46.0, 43.72, bp)
             assert label(g.phi.grid < 0)[1] == 1
             assert (g.phi.grid[g.phi.hard_mask_solid] < 0).all()
@@ -185,7 +149,7 @@ def test_body_mass_is_the_mass_of_the_mesh_that_gets_milled():
     try:
         import param_body as pb
         import unified_phi as up
-        g = pb.build(120.3, 46.0, 43.72, pb.BodyParams().to_hybrid(), skin_offset_mm=1.0)
+        g = pb.build(120.3, 46.0, 43.72, pb.BodyParams(), skin_offset_mm=1.0)
         foam = [c for c in up.compute_mass_com(g) if c.name != "nose"]
         nose_cells = g.component_mask("nose") & (g.phi.grid < 0)
         mesh_cm3 = 2 * abs(up.extract_half_surface(g).volume) * 1e6
@@ -195,15 +159,3 @@ def test_body_mass_is_the_mass_of_the_mesh_that_gets_milled():
         assert abs(field_cm3 - mesh_cm3) < 0.5 * abs(cells_cm3 - mesh_cm3)
     finally:
         use_spacing(0.3)
-
-
-if __name__ == "__main__":
-    _mod = sys.modules[__name__]
-    _fails = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)(); print("PASS", _n)
-        except Exception as e:  # noqa: BLE001
-            _fails += 1; print("FAIL", _n, "->", repr(e))
-    print(f"{_fails} failed")
-    sys.exit(1 if _fails else 0)

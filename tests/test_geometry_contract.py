@@ -262,24 +262,3 @@ def test_machining_is_top_bottom_and_sides_only():
                      (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
             assert need in got, f"{comp} is missing tool direction {need}"
     _pass("test_machining_is_top_bottom_and_sides_only")
-
-
-if __name__ == "__main__":
-    # Collected BY NAME -- the hand-written list this replaces would have
-    # silently skipped anything added after it was written.
-    import sys as _sys
-    _mod = _sys.modules[__name__]
-    _failed = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        _fn = getattr(_mod, _n)
-        if not callable(_fn):
-            continue
-        try:
-            _fn()
-        except Exception as _exc:  # noqa: BLE001
-            print("FAIL %s: %s" % (_n, _exc))
-            _failed += 1
-    if _failed:
-        print("%d geometry_contract test(s) FAILED." % _failed)
-        _sys.exit(1)
-    print("All geometry_contract tests passed.")

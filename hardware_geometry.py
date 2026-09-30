@@ -41,7 +41,6 @@ promoted into this module.)
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -150,7 +149,7 @@ def build_wheel_assembly(axle: str, x_target_mm: float) -> dict[str, "trimesh.Tr
     so placement only needs an x shift (the axle position is a search
     variable; the wheel's own shape and lateral offset are not).
     """
-    from geometry_contract import WHEEL_WIDTH_MM, FRONT_WHEEL_INNER_Y_MM, REAR_WHEEL_INNER_Y_MM
+    from geometry_contract import FRONT_WHEEL_INNER_Y_MM, REAR_WHEEL_INNER_Y_MM
 
     if axle not in ("front", "rear"):
         raise ValueError(f"axle must be 'front' or 'rear', got {axle!r}")

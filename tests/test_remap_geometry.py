@@ -243,21 +243,3 @@ def test_warm_start_carries_a_CARVED_field_to_the_next_d_halo():
         assert _mass(w) < before, (
             f"the first update after warm starting to d_halo={new_d} removed "
             "nothing")
-
-
-if __name__ == "__main__":
-    # Collected by name; a hand-written call list silently drops every test
-    # appended below it, which has already hidden several tests in this repo.
-    import sys as _sys
-    _mod = _sys.modules[__name__]
-    _passed = _failed = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)()
-            print(f"PASS {_n}")
-            _passed += 1
-        except Exception as _e:  # noqa: BLE001
-            print(f"FAIL {_n}: {_e}")
-            _failed += 1
-    print(f"{_passed} passed, {_failed} failed")
-    _sys.exit(1 if _failed else 0)
