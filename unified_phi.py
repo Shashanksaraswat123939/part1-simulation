@@ -1112,20 +1112,28 @@ def compute_mass_com(geom: UnifiedGeometry) -> list:
     dx = GRID_SPACING_M
     ox, oy, oz = geom.region.origin_m
     out = []
+    # SUB-CELL VOLUME (2026-09-30). A cell whose centre is within half a cell
+    # of the surface is partly solid: its filled fraction is 0.5 - phi/dx.
+    # Counting whole cells (phi < 0) over-stated the body that is actually
+    # milled -- the exported mesh -- by 0.12-0.28 g on three 1 mm bodies,
+    # more than the 0.2 g the car is sized above the 48.0 g T3.6 floor. The
+    # fraction agrees with the mesh to 0.04 g. Where phi is not a distance
+    # (|phi| >= dx/2 everywhere) this is exactly the old cell count.
+    fill = np.clip(0.5 - geom.phi.grid.astype(np.float64) / dx, 0.0, 1.0)
 
     for name in ("nose", "sidepod", "rearpod", "main_body"):
-        solid = geom.solid_mask(name)
-        n = int(solid.sum())
-        if n == 0:
+        w = np.where(geom.component_mask(name), fill, 0.0)
+        n = float(w.sum())
+        if n == 0.0:
             out.append(ComponentMassCOM(name=name, mass_kg=0.0,
                                         com_x_m=ox, com_y_m=oy, com_z_m=oz))
             continue
-        ix, iy, iz = np.where(solid)
+        ix, iy, iz = (np.arange(k) for k in w.shape)
         out.append(ComponentMassCOM(
             name=name,
             mass_kg=n * dx ** 3 * get_density(name),
-            com_x_m=ox + float(np.mean(ix)) * dx,
-            com_y_m=oy + float(np.mean(iy)) * dx,
-            com_z_m=oz + float(np.mean(iz)) * dx,
+            com_x_m=ox + float(w.sum(axis=(1, 2)) @ ix) / n * dx,
+            com_y_m=oy + float(w.sum(axis=(0, 2)) @ iy) / n * dx,
+            com_z_m=oz + float(w.sum(axis=(0, 1)) @ iz) / n * dx,
         ))
     return out

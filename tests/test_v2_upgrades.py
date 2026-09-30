@@ -175,6 +175,28 @@ def test_param_body_is_one_legal_piece_with_and_without_floor():
     finally:
         use_spacing(0.3)
 
+
+def test_body_mass_is_the_mass_of_the_mesh_that_gets_milled():
+    """The car is sized to 0.2 g above the T3.6 floor, and what is milled is
+    the exported mesh. The mass must follow that mesh, not a whole-cell count
+    (0.12-0.28 g heavier on three 1 mm bodies, 2026-09-30)."""
+    from coarse import use_spacing
+    use_spacing(1.0)
+    try:
+        import param_body as pb
+        import unified_phi as up
+        g = pb.build(120.3, 46.0, 43.72, pb.BodyParams().to_hybrid(), skin_offset_mm=1.0)
+        foam = [c for c in up.compute_mass_com(g) if c.name != "nose"]
+        nose_cells = g.component_mask("nose") & (g.phi.grid < 0)
+        mesh_cm3 = 2 * abs(up.extract_half_surface(g).volume) * 1e6
+        field_cm3 = sum(c.mass_kg for c in foam) / 163.0 * 1e6 + nose_cells.sum() * 1e-3
+        cells_cm3 = (g.phi.grid < 0).sum() * 1e-3
+        assert abs(field_cm3 - mesh_cm3) * 0.163 < 0.10, (field_cm3, mesh_cm3)
+        assert abs(field_cm3 - mesh_cm3) < 0.5 * abs(cells_cm3 - mesh_cm3)
+    finally:
+        use_spacing(0.3)
+
+
 if __name__ == "__main__":
     _mod = sys.modules[__name__]
     _fails = 0
